@@ -29,13 +29,19 @@ would also inject its own independent sampling noise between adjacent
 subsets, muddying the marginal-contribution signal. Instead, this module
 draws each player's simulated season ONCE per roster (one
 app.services.simulation.simulate_players call, reused across every
-permutation and every prefix within them) and, for a growing prefix
-within a permutation, sums the ALREADY-DRAWN per-player arrays and
-applies portfolio.py's exact mean-minus-variance-penalty formula directly
-to that running sum. This is far cheaper (one simulation batch instead of
-thousands) AND means every subset evaluation within a run is drawn from
-the SAME internally-consistent model of how these specific players'
-outcomes co-vary, not independently-resampled noise.
+permutation and every prefix within them) and, for each prefix within a
+permutation, re-sums the ALREADY-DRAWN per-player arrays for that prefix
+(see `_weighted_value` -- as of Chunk 7, this also re-derives which of
+the prefix's OWN players are starters vs. bench each time, since that's a
+property of the subset, not a fixed label; see the CHUNK 7 note below)
+and applies portfolio.py's exact objective directly to that sum. Every
+subset evaluation within a run is still drawn from the SAME
+internally-consistent model of how these specific players' outcomes
+co-vary -- the efficiency win is "one simulation batch instead of
+thousands of independent re-simulations," not "O(1) work per prefix"
+(re-summing a prefix from scratch is O(n) in the prefix size, so O(n^2)
+per permutation overall -- negligible at roster-sized n, see this
+chunk's measured runtime).
 
 A useful side effect of this construction: for ANY single permutation, its
 players' marginal contributions telescope EXACTLY to value(full roster) -
@@ -64,6 +70,25 @@ app.services._stats.WelfordAccumulator (numerically stable regardless of
 reward scale), and two players whose Shapley estimates are statistically
 indistinguishable are flagged rather than presented as a confident
 ranking, mirroring mcts.py's near-tie handling.
+
+CHUNK 7 -- STARTER/BENCH AWARENESS, RECOMPUTED PER PREFIX: portfolio.py
+gained starter/bench-aware valuation in Chunk 7 (bench players' simulated
+points are discounted, not counted equally with starters -- see that
+module). This module's inline `_prefix_value` re-derivation of
+portfolio.py's objective (see the EFFICIENCY section above for why it's
+inlined rather than calling evaluate_roster()) has to apply that same
+discount to stay consistent -- and critically, a player's starter/bench
+status must be recomputed FOR EACH PREFIX, not fixed once for the final
+roster. Whether a player is a "starter" is a property of a SPECIFIC
+subset (it depends on who else is in that subset competing for the same
+FLEX/SUPER_FLEX slots), not a fixed label -- the same player can be a
+starter in a small early prefix and get bumped to bench once a
+permutation adds someone better later, which is exactly the scarcity
+signal Shapley is supposed to capture. The efficiency property (Shapley
+values sum to the roster's total value) still holds EXACTLY under this --
+it's a generic property of summing a telescoping chain of value
+differences along one ordering, true for ANY consistently-evaluated value
+function, discount-aware or not.
 """
 
 from __future__ import annotations
@@ -73,8 +98,9 @@ from typing import Any, Optional
 import numpy as np
 
 from app.services._stats import WelfordAccumulator
-from app.services.portfolio import DEFAULT_RISK_AVERSION
+from app.services.portfolio import BENCH_VALUE_DISCOUNT, DEFAULT_BENCH_DISCOUNT, DEFAULT_RISK_AVERSION
 from app.services.simulation import DEFAULT_NUM_SIMS, simulate_players
+from app.services.vbd import allocate_roster_starters
 
 NUM_PERMUTATIONS = 200
 
@@ -86,10 +112,34 @@ NEAR_TIE_Z = 1.5
 SHAPLEY_NUM_SIMS = DEFAULT_NUM_SIMS  # the one shared simulation batch every permutation reuses
 
 
-def _prefix_value(running_sum: np.ndarray, risk_aversion: float) -> float:
-    """portfolio.py's mean-minus-variance-penalty objective, applied directly to an already-summed array."""
-    mean = float(running_sum.mean())
-    variance = float(running_sum.var(ddof=1)) if running_sum.size > 1 else 0.0
+def _weighted_value(
+    prefix_players: list[dict[str, Any]],
+    per_player_totals: dict[str, np.ndarray],
+    risk_aversion: float,
+    discount_by_position: dict[str, float],
+    num_sims: int,
+) -> float:
+    """
+    portfolio.py's mean-minus-variance-penalty objective, applied to a
+    specific subset of the roster -- determines THIS subset's own
+    starters/bench (see module docstring on why that must be re-derived
+    per subset, not inherited from the full roster) and sums each
+    player's simulated draws at full value (starter) or discounted value
+    (bench) before computing mean/variance, exactly mirroring
+    portfolio.evaluate_roster's math.
+    """
+    starter_ids = allocate_roster_starters(prefix_players)
+    weighted_sum = np.zeros(num_sims)
+    for p in prefix_players:
+        pid = p["player_id"]
+        if pid in starter_ids:
+            weighted_sum += per_player_totals[pid]
+        else:
+            discount = discount_by_position.get(p.get("position"), DEFAULT_BENCH_DISCOUNT)
+            weighted_sum += per_player_totals[pid] * discount
+
+    mean = float(weighted_sum.mean())
+    variance = float(weighted_sum.var(ddof=1)) if weighted_sum.size > 1 else 0.0
     return mean - risk_aversion * variance
 
 
@@ -98,16 +148,18 @@ def evaluate_shapley(
     risk_aversion: float = DEFAULT_RISK_AVERSION,
     num_permutations: int = NUM_PERMUTATIONS,
     num_sims: int = SHAPLEY_NUM_SIMS,
+    bench_value_discount: Optional[dict[str, float]] = None,
     seed: Optional[int] = None,
 ) -> dict[str, Any]:
     """
     Per-player approximate Shapley value against portfolio.py's
-    risk-adjusted objective, for THIS specific roster. Returns each
-    player's estimate, standard error, and whether it's statistically
-    indistinguishable from the top-ranked player -- plus the roster's
-    actual total risk-adjusted value, so a caller can check the Shapley
-    values against the "efficiency" property (they should sum to it --
-    see the module docstring for why that's exact here, not approximate).
+    risk-adjusted, starter/bench-aware objective, for THIS specific
+    roster. Returns each player's estimate, standard error, and whether
+    it's statistically indistinguishable from the top-ranked player --
+    plus the roster's actual total risk-adjusted value, so a caller can
+    check the Shapley values against the "efficiency" property (they
+    should sum to it -- see the module docstring for why that's exact
+    here, not approximate).
     """
     if not roster_players:
         return {
@@ -120,6 +172,7 @@ def evaluate_shapley(
             "risk_aversion": risk_aversion,
         }
 
+    discount_by_position = bench_value_discount or BENCH_VALUE_DISCOUNT
     rng = np.random.default_rng(seed)
 
     player_ids = [p["player_id"] for p in roster_players]
@@ -131,13 +184,12 @@ def evaluate_shapley(
     order_indices = np.arange(n)
     for _ in range(num_permutations):
         rng.shuffle(order_indices)
-        running_sum = np.zeros(num_sims)
         prev_value = 0.0  # value of the empty set is 0 by construction
-        for idx in order_indices:
-            pid = player_ids[idx]
-            running_sum = running_sum + per_player_totals[pid]
-            value = _prefix_value(running_sum, risk_aversion)
-            accumulators[pid].record(value - prev_value)
+        for k in range(1, n + 1):
+            prefix_players = [roster_players[i] for i in order_indices[:k]]
+            value = _weighted_value(prefix_players, per_player_totals, risk_aversion, discount_by_position, num_sims)
+            newest_pid = player_ids[order_indices[k - 1]]
+            accumulators[newest_pid].record(value - prev_value)
             prev_value = value
 
     results = []
@@ -168,8 +220,7 @@ def evaluate_shapley(
         r["within_noise_of_leader"] = r is leader or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se)
 
     sum_of_shapley = sum(r["shapley_value"] for r in results)
-    full_running_sum = sum((per_player_totals[pid] for pid in player_ids), start=np.zeros(num_sims))
-    roster_value = _prefix_value(full_running_sum, risk_aversion)
+    roster_value = _weighted_value(roster_players, per_player_totals, risk_aversion, discount_by_position, num_sims)
 
     return {
         "players": results,

@@ -47,6 +47,22 @@ specific roster slots are already filled on which teams, not just which
 players are gone -- is a later chunk; this is deliberately structured so
 that upgrade is additive rather than a rewrite (swap what feeds
 `drafted_player_ids` / add a per-team slot-tracking layer on top).
+
+ALSO EXPORTED: `allocate_roster_starters`, which reuses this exact same
+allocation algorithm (see `_allocate_starters`) to answer a different but
+closely related question -- not "which players are startable somewhere
+across the whole league" (used above for replacement level), but "which
+of THIS ONE roster's own players occupy ITS starting lineup." Chunk 6
+added this: app/services/portfolio.py's roster valuation had no concept
+of a starting lineup at all (it summed every rostered player's simulated
+points equally), so Shapley attribution built on top of it couldn't see
+real positional need (a same-value player joining an already-deep
+position scored the same as one filling a real starting gap). Reusing
+this module's already-solved SUPER_FLEX/FLEX allocation logic -- rather
+than reimplementing a second copy of it -- is exactly what
+`_allocate_starters` being factored out as a shared core (parameterized by
+how many slots to fill, not hardcoded to league-wide demand) makes
+possible.
 """
 
 from __future__ import annotations
@@ -65,6 +81,71 @@ def _slot_counts() -> dict[str, int]:
     for slot in ROSTER_POSITIONS:
         counts[slot] = counts.get(slot, 0) + 1
     return counts
+
+
+def _allocate_starters(
+    by_position: dict[str, list[dict[str, Any]]],
+    slot_needs: dict[str, int],
+) -> set[str]:
+    """
+    Shared starter-allocation core (see module docstring). `by_position`
+    must already be grouped by position and sorted DESCENDING by
+    projected_points within each position. `slot_needs` gives how many
+    dedicated QB/RB/WR/TE slots plus FLEX/SUPER_FLEX slots need filling --
+    already scaled to however many teams' worth of demand this call
+    represents (`compute_replacement_levels` scales by NUM_TEAMS for
+    league-wide demand; `allocate_roster_starters` uses raw per-team
+    counts for a single roster's own lineup). The allocation algorithm
+    (dedicated slots first, then one combined FLEX+SUPER_FLEX pass capped
+    by QB eligibility -- see module docstring for why that must be one
+    pass, not two) is identical either way; only the slot quantities
+    differ.
+
+    Returns the set of player_ids that would occupy a starting slot.
+    """
+    started_ids: set[str] = set()
+
+    # Step 1: dedicated (non-flex) slots.
+    remaining: dict[str, list[dict]] = {}
+    for pos, players in by_position.items():
+        need = slot_needs.get(pos, 0)
+        started_ids.update(p["player_id"] for p in players[:need])
+        remaining[pos] = players[need:]
+
+    # Step 2: FLEX + SUPER_FLEX slots filled together as one combined greedy
+    # pass: best-points-first across all remaining players of any position,
+    # capped so at most `super_flex_slots` of the seats taken are QBs (the
+    # only slot type a QB can occupy).
+    flex_slots = slot_needs.get("FLEX", 0)
+    super_flex_slots = slot_needs.get("SUPER_FLEX", 0)
+    total_flexible_slots = flex_slots + super_flex_slots
+
+    combined_pool: list[dict] = []
+    for pos in SUPER_FLEX_ELIGIBLE:  # QB, RB, WR, TE
+        combined_pool.extend(remaining.get(pos, []))
+    combined_pool.sort(key=lambda p: p["projected_points"], reverse=True)
+
+    qb_seated = 0
+    flex_started: set[str] = set()
+    for p in combined_pool:
+        if len(flex_started) >= total_flexible_slots:
+            break
+        if p["position"] == "QB":
+            if qb_seated >= super_flex_slots:
+                continue  # no SUPER_FLEX slot left that could hold another QB
+            qb_seated += 1
+        flex_started.add(p["player_id"])
+
+    started_ids.update(flex_started)
+    return started_ids
+
+
+def _league_slot_needs(slot_counts: dict[str, int]) -> dict[str, int]:
+    """Per-position/flex slot counts scaled to league-wide (all NUM_TEAMS teams') demand."""
+    needs = {pos: slot_counts.get(pos, 0) * NUM_TEAMS for pos in FANTASY_POSITIONS}
+    needs["FLEX"] = slot_counts.get("FLEX", 0) * NUM_TEAMS
+    needs["SUPER_FLEX"] = slot_counts.get("SUPER_FLEX", 0) * NUM_TEAMS
+    return needs
 
 
 def compute_replacement_levels(
@@ -94,40 +175,11 @@ def compute_replacement_levels(
     for pos in by_position:
         by_position[pos].sort(key=lambda p: p["projected_points"], reverse=True)
 
-    # Step 1: dedicated (non-flex) slots.
-    dedicated_needed = {pos: slot_counts.get(pos, 0) * NUM_TEAMS for pos in by_position}
-    remaining: dict[str, list[dict]] = {
-        pos: players[dedicated_needed[pos]:] for pos, players in by_position.items()
-    }
-
-    # Step 2: FLEX + SUPER_FLEX slots filled together as one combined greedy
-    # pass (see module docstring for why this must NOT be two separate
-    # passes): best-points-first across all remaining players of any
-    # position, capped so at most `super_flex_slots` of the seats taken are
-    # QBs (the only slot type a QB can occupy).
-    flex_slots = slot_counts.get("FLEX", 0) * NUM_TEAMS
-    super_flex_slots = slot_counts.get("SUPER_FLEX", 0) * NUM_TEAMS
-    total_flexible_slots = flex_slots + super_flex_slots
-
-    combined_pool: list[dict] = []
-    for pos in SUPER_FLEX_ELIGIBLE:  # QB, RB, WR, TE
-        combined_pool.extend(remaining[pos])
-    combined_pool.sort(key=lambda p: p["projected_points"], reverse=True)
-
-    started_ids: set[str] = set()
-    qb_seated = 0
-    for p in combined_pool:
-        if len(started_ids) >= total_flexible_slots:
-            break
-        if p["position"] == "QB":
-            if qb_seated >= super_flex_slots:
-                continue  # no SUPER_FLEX slot left that could hold another QB
-            qb_seated += 1
-        started_ids.add(p["player_id"])
+    started_ids = _allocate_starters(by_position, _league_slot_needs(slot_counts))
 
     remaining = {
         pos: [p for p in players if p["player_id"] not in started_ids]
-        for pos, players in remaining.items()
+        for pos, players in by_position.items()
     }
 
     # Replacement level = best remaining (non-started) player left at each position.
@@ -144,6 +196,39 @@ def compute_replacement_levels(
             replacement_levels[pos] = 0.0
 
     return replacement_levels
+
+
+def allocate_roster_starters(roster_players: Iterable[dict[str, Any]]) -> set[str]:
+    """
+    Given a SINGLE roster (not the league-wide draft pool), returns the
+    set of player_ids that would occupy one of THIS roster's own starting
+    slots (QB/RB/WR/FLEX/SUPER_FLEX per app/config.py ROSTER_POSITIONS),
+    using the exact same allocation algorithm as `compute_replacement_levels`
+    -- just with this one team's own slot counts (not scaled by NUM_TEAMS,
+    since we're filling one team's lineup, not modeling league-wide
+    demand). Anyone in `roster_players` but not in the returned set is
+    bench.
+
+    If the roster has fewer players than starting slots at some position
+    (a mid-draft partial roster, or a thin bench), everyone eligible ends
+    up started -- there's nobody left to be bench yet, which is the
+    correct behavior for a roster still being built.
+    """
+    slot_counts = _slot_counts()
+    roster_slot_needs = {pos: slot_counts.get(pos, 0) for pos in FANTASY_POSITIONS}
+    roster_slot_needs["FLEX"] = slot_counts.get("FLEX", 0)
+    roster_slot_needs["SUPER_FLEX"] = slot_counts.get("SUPER_FLEX", 0)
+
+    by_position: dict[str, list[dict]] = {pos: [] for pos in FANTASY_POSITIONS}
+    for p in roster_players:
+        pos = p.get("position")
+        if pos in by_position:
+            by_position[pos].append(p)
+
+    for pos in by_position:
+        by_position[pos].sort(key=lambda p: p["projected_points"], reverse=True)
+
+    return _allocate_starters(by_position, roster_slot_needs)
 
 
 def calculate_vbd(

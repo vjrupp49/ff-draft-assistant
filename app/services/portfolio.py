@@ -52,6 +52,55 @@ justify one. Shipping a flat default and exposing `risk_aversion` as a
 parameter lets a future Phase 2 component pass in a higher/lower value
 once it can actually compute "am I a bubble team or a top seed" -- this
 module doesn't need to change when that happens.
+
+CHUNK 6 FIX -- STARTER/BENCH LINEUP AWARENESS: this module originally
+summed EVERY given player's simulated points equally, with no concept of
+a starting lineup -- it couldn't distinguish a player who starts every
+week from pure bench depth. That silently broke Shapley attribution (a
+same-value player joining an already-deep position scored the same as one
+filling a real starting gap, since the value function had no way to see
+the difference) and was equally present in MCTS's reward, which uses this
+same function. Fixed by reusing app.services.vbd's already-solved
+SUPER_FLEX/FLEX starter-allocation logic (`allocate_roster_starters` --
+the exact same algorithm that correctly solved the SUPERFLEX QB
+replacement-level problem in Chunk 2, not reimplemented here) to split a
+roster into starters vs. bench, then applying BENCH_VALUE_DISCOUNT (see
+below) to bench players' contribution rather than dropping them to zero.
+
+WHY NOT ZERO FOR BENCH: a bench RB2 handcuff or backup QB in a SUPER_FLEX
+league has real injury-replacement and bye-week flexibility value even
+though it isn't in this week's starting lineup. Valuing bench at exactly
+zero would create the opposite distortion -- the system would then
+undervalue reasonable bench-building entirely. Discounting (not zeroing)
+bench contribution is a deliberate middle ground.
+
+WHY THE DISCOUNT VARIES BY POSITION, NOT ONE FLAT NUMBER: how likely a
+bench player is to actually matter in a real season differs a lot by
+position in THIS league's specific format --
+  - QB: this league's heavy SUPER_FLEX usage means a large share of teams
+    are already starting 2 QBs (see vbd.py's QB replacement-level finding
+    -- demand lands around ~2 QBs/team). A benched 3rd QB has a real
+    chance of being needed on a bye week or after an injury to either
+    starter. Higher discount.
+  - RB: the classic "handcuff" position -- backup RBs are notoriously
+    likely to be forced into must-start value after an injury to the
+    starter ahead of them, more so than any other position. Higher
+    discount.
+  - WR: this league's deepest position (2 dedicated + the largest natural
+    share of 3 FLEX slots) -- a benched WR is the LEAST likely bench
+    asset to be forced into the lineup, since there's already the most
+    competition/depth at the position. Lower discount.
+  - TE: this league has ZERO dedicated TE slot at all (TE only reaches a
+    lineup via FLEX/SUPER_FLEX, competing directly with RB/WR there) --
+    real bye-week/matchup flexibility value exists, but less structural
+    "forced into the lineup" pressure than RB/QB. Moderate discount.
+This is a placeholder heuristic (values are a documented judgment call,
+not fit to any real injury/bye-week data), explicitly NOT a real
+season-long injury/bye model -- that level of realism needs actual season
+data and is Phase 2 scope, same as the standings-aware risk_aversion idea
+above. `bench_value_discount` is exposed as a parameter so a future
+Phase 2 component can replace these numbers with calibrated ones without
+this module's interface changing.
 """
 
 from __future__ import annotations
@@ -61,6 +110,24 @@ from typing import Any, Optional
 import numpy as np
 
 from app.services.simulation import DEFAULT_NUM_SIMS, simulate_players
+from app.services.vbd import allocate_roster_starters
+
+# Fraction of a BENCH player's simulated points that count toward roster
+# value (starters always count at 100%). See the module docstring's WHY
+# THE DISCOUNT VARIES BY POSITION section for the per-position reasoning
+# -- QB/RB higher (SUPER_FLEX depth demand / classic handcuff value), WR
+# lower (deepest position, least likely to be forced into a lineup), TE
+# moderate (no dedicated slot, but real flex value). All four sit in the
+# suggested 0.2-0.4 "meaningful partial credit, not near-zero, not
+# near-full" band -- a documented placeholder judgment call, not fit to
+# real injury/bye-week data (see docstring).
+BENCH_VALUE_DISCOUNT: dict[str, float] = {
+    "QB": 0.35,
+    "RB": 0.35,
+    "WR": 0.20,
+    "TE": 0.25,
+}
+DEFAULT_BENCH_DISCOUNT = 0.25  # fallback for any position missing from the dict above
 
 # Calibrated against this project's own observed roster variances (Chunk 3
 # verification: a 3-player same-team-stacked roster had simulated variance
@@ -99,17 +166,23 @@ def evaluate_roster(
     roster_players: list[dict[str, Any]],
     risk_aversion: float = DEFAULT_RISK_AVERSION,
     num_sims: int = DEFAULT_NUM_SIMS,
+    bench_value_discount: Optional[dict[str, float]] = None,
     seed: Optional[int] = None,
 ) -> dict[str, Any]:
     """
     Risk-adjusted value of a candidate roster: mean simulated season
     points minus `risk_aversion` * simulated season-point VARIANCE, using
     the full covariance structure across the roster (not each player's
-    variance treated in isolation).
+    variance treated in isolation) -- with BENCH players' contribution
+    discounted (see module docstring) rather than counted equally with
+    starters. Starters/bench are determined by
+    app.services.vbd.allocate_roster_starters against this league's actual
+    SUPER_FLEX/FLEX roster structure.
 
     Returns the risk-adjusted score plus the full mean/variance/covariance
-    breakdown, so a caller (or a person debugging) can see WHY a roster
-    scored the way it did, not just the final number.
+    breakdown (including each player's starter/bench status and the
+    discount applied), so a caller (or a person debugging) can see WHY a
+    roster scored the way it did, not just the final number.
     """
     if not roster_players:
         return {
@@ -121,15 +194,40 @@ def evaluate_roster(
             "correlation_inflation": None,
             "risk_aversion": risk_aversion,
             "num_sims": num_sims,
+            "starters": [],
+            "bench": [],
             "players": [],
             "covariance_matrix": {"player_ids": [], "matrix": []},
         }
 
+    discount_by_position = bench_value_discount or BENCH_VALUE_DISCOUNT
+    starter_ids = allocate_roster_starters(roster_players)
+
     per_player_totals = simulate_players(roster_players, num_sims=num_sims, seed=seed)
     player_ids = [p["player_id"] for p in roster_players]
-    matrix = np.array([per_player_totals[pid] for pid in player_ids])  # shape (num_players, num_sims)
+
+    # Bench players' simulated draws are scaled by their position's
+    # discount BEFORE computing mean/covariance -- scaling a random
+    # variable by a constant c scales its variance by c^2 and its
+    # covariance with everyone else by c, so this discounts a bench
+    # player's contribution to BOTH the roster's expected value AND its
+    # risk consistently, not just the final point estimate.
+    contributed_totals: dict[str, np.ndarray] = {}
+    player_discounts: dict[str, float] = {}
+    for p in roster_players:
+        pid = p["player_id"]
+        if pid in starter_ids:
+            discount = 1.0
+        else:
+            discount = discount_by_position.get(p.get("position"), DEFAULT_BENCH_DISCOUNT)
+        player_discounts[pid] = discount
+        contributed_totals[pid] = per_player_totals[pid] * discount
+
+    matrix = np.array([contributed_totals[pid] for pid in player_ids])  # shape (num_players, num_sims)
+    raw_matrix = np.array([per_player_totals[pid] for pid in player_ids])  # undiscounted, for the per-player breakdown
 
     means = matrix.mean(axis=1)
+    raw_means = raw_matrix.mean(axis=1)
     if len(player_ids) > 1:
         # rowvar=True (default): each ROW is one player's simulated draws.
         # ddof=1 for the unbiased sample covariance estimator.
@@ -156,19 +254,25 @@ def evaluate_roster(
         "correlation_inflation": round(correlation_inflation, 3) if correlation_inflation is not None else None,
         "risk_aversion": risk_aversion,
         "num_sims": num_sims,
+        "starters": [pid for pid in player_ids if pid in starter_ids],
+        "bench": [pid for pid in player_ids if pid not in starter_ids],
         "players": [
             {
                 "player_id": pid,
                 "name": p.get("name"),
                 "position": p.get("position"),
                 "team": p.get("team"),
-                "mean": round(float(means[i]), 1),
-                "variance": round(float(cov[i, i]), 1),
+                "is_starter": pid in starter_ids,
+                "bench_discount_applied": None if pid in starter_ids else player_discounts[pid],
+                "raw_mean": round(float(raw_means[i]), 1),
+                "contributed_mean": round(float(means[i]), 1),
+                "contributed_variance": round(float(cov[i, i]), 1),
             }
             for i, (pid, p) in enumerate(zip(player_ids, roster_players))
         ],
         "covariance_matrix": {
             "player_ids": player_ids,  # row/column order for `matrix` below
+            "note": "reflects DISCOUNTED (starter/bench-weighted) values -- cov.sum() == variance above",
             "matrix": [[round(float(v), 1) for v in row] for row in cov],
         },
     }
