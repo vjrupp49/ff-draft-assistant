@@ -18,6 +18,7 @@ from app.config import (
     SLEEPER_DRAFT_ID,
     SLEEPER_LEAGUE_ID,
 )
+from app.routers.draft_score import router as draft_score_router
 from app.routers.mcts import router as mcts_router
 from app.routers.portfolio import router as portfolio_router
 from app.routers.rankings import router as rankings_router
@@ -36,6 +37,7 @@ app.include_router(simulate_router)
 app.include_router(mcts_router)
 app.include_router(portfolio_router)
 app.include_router(shapley_router)
+app.include_router(draft_score_router)
 
 
 @app.get("/")
