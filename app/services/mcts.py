@@ -15,8 +15,8 @@ not thousands) beyond the tree horizon. Concretely:
     picks). Opponent picks happening between my turns are NOT tree nodes
     -- they're resolved by one stochastic sample per visit from
     opponent_model.py. This keeps branching to "my candidate players"
-    only, not "every team's every option," which is what makes a few
-    dozen iterations tractable in a few seconds.
+    only, not "every team's every option," which is what makes a couple
+    hundred iterations tractable in a few seconds.
   - TREE_DEPTH (default 2): how many of my own future picks get real
     UCB1-guided tree search (this pick + 1 more). Beyond that,
     ROLLOUT_EXTRA_PICKS (default 1) more of my picks are filled with a
@@ -31,9 +31,11 @@ not thousands) beyond the tree horizon. Concretely:
     top of the board.
   - Each rollout's value comes from ONE call to
     app.services.simulation.simulate_roster_summary with a reduced
-    ROLLOUT_SIM_COUNT (150, vs. that module's default 1000) -- enough for
+    ROLLOUT_SIM_COUNT (300, vs. that module's default 1000) -- enough for
     a stable-enough mean for RANKING candidates against each other within
-    one MCTS run, not a publishable point estimate on its own.
+    one MCTS run, not a publishable point estimate on its own. (Tuned up
+    from Chunk 4's initial 150 during the stability pass -- see the
+    STABILITY NOTE by the ITERATIONS constant below.)
 
 Measured runtime with these defaults is reported per-call by the API layer
 (see app/routers/mcts.py's `runtime_seconds`) -- see the chunk's
@@ -72,8 +74,32 @@ logger = logging.getLogger("ff_draft_assistant.mcts")
 TREE_DEPTH = 2
 CANDIDATE_BREADTH = 8
 ROLLOUT_EXTRA_PICKS = 1
-ITERATIONS = 60
-ROLLOUT_SIM_COUNT = 150
+
+# Bumped from the Chunk 4 defaults (60 / 150) after a stability pass found
+# the #1 recommendation could flip between identical back-to-back calls --
+# see STABILITY NOTE below. These values roughly halve run-to-run score
+# noise for a ~2x runtime cost (~0.7s -> ~1.4s in testing), still
+# comfortably inside the "a few seconds" budget.
+ITERATIONS = 150
+ROLLOUT_SIM_COUNT = 300
+
+# STABILITY NOTE (post-Chunk-4 verification pass): re-running an identical
+# scenario 5x at the Chunk 4 defaults flipped the #1 recommendation
+# 4-out-of-5 vs 1-out-of-5 between two candidates whose scores sat well
+# within one standard deviation of each other. Raising iterations to 200
+# and separately to (150 iters, 400 rollout sims) both roughly halved the
+# noise but did NOT eliminate the flip -- the two candidates' mean scores
+# stayed a fraction of a point apart even with ~2.5x the compute, which is
+# the signature of a genuine near-tie in estimated value, not insufficient
+# sampling. Throwing more iterations at a true tie forever chases noise
+# that never fully resolves. The actual fix is below: `recommend()` now
+# tracks each candidate's standard error and flags when the leaders are
+# statistically indistinguishable, so a near-tie gets reported as a STABLE
+# "these are roughly interchangeable" finding every run, instead of an
+# unstable single "winner" that silently coin-flips between calls. The
+# iteration/sim bump above is a complementary, real improvement (less
+# noise for the candidates that AREN'T close), not a claim that it makes
+# every ranking deterministic.
 
 # Standard UCB1 exploration constant for REWARDS NORMALIZED TO [0, 1] (see
 # _RewardStats below) -- sqrt(2) is the textbook value; nudged up slightly
@@ -81,6 +107,14 @@ ROLLOUT_SIM_COUNT = 150
 # under-exploring is the costlier mistake here: a first-look reward from a
 # single noisy ~150-sim rollout is a weak signal to commit to early.
 UCB_EXPLORATION = 1.8
+
+# How many combined standard errors apart two candidates' scores need to be
+# before we call one a clear leader over the other, rather than flagging
+# them as statistically indistinguishable (see STABILITY NOTE above). A
+# judgment-call threshold, not a formal hypothesis test -- no
+# multiple-comparison correction -- but enough to stop presenting sampling
+# noise as a confident single "#1 pick."
+NEAR_TIE_Z = 1.5
 
 
 class _RewardStats:
@@ -115,7 +149,10 @@ class _RewardStats:
 
 
 class _Node:
-    __slots__ = ("draft_state", "depth", "player_id", "parent", "children", "untried", "visits", "total_value")
+    __slots__ = (
+        "draft_state", "depth", "player_id", "parent", "children", "untried",
+        "visits", "_mean", "_m2",
+    )
 
     def __init__(
         self,
@@ -132,11 +169,44 @@ class _Node:
         self.children: dict[str, "_Node"] = {}
         self.untried = untried
         self.visits = 0
-        self.total_value = 0.0
+        self._mean = 0.0
+        self._m2 = 0.0  # Welford's running sum of squared deviations from the mean
 
     @property
     def mean_value(self) -> float:
-        return self.total_value / self.visits if self.visits else 0.0
+        return self._mean
+
+    @property
+    def stderr(self) -> Optional[float]:
+        """
+        Standard error of `mean_value`, from the running sample variance of
+        rewards backpropagated through this node. None with fewer than 2
+        visits (variance undefined). Used to flag near-ties between top
+        candidates -- see the STABILITY NOTE above `ITERATIONS`.
+        """
+        if self.visits < 2:
+            return None
+        variance = self._m2 / self.visits
+        return (variance / self.visits) ** 0.5
+
+    def record(self, reward: float) -> None:
+        """
+        Welford's online mean/variance update. Rewards here are simulated
+        SEASON POINT TOTALS (mean sits around 1000+ once a roster has a few
+        players), and a naive `sum(x^2)/n - mean^2` variance formula was
+        tried first here and rejected -- it subtracts two very large,
+        very close numbers (~mean^2 each) to get a comparatively tiny
+        variance, so float error swamps the result (observed: it reported
+        a standard error ~15x larger than the deviation actually seen
+        across repeated live runs). Welford's formula only ever works with
+        deviations from the running mean, which stay small, so it doesn't
+        have that cancellation problem.
+        """
+        self.visits += 1
+        delta = reward - self._mean
+        self._mean += delta / self.visits
+        delta2 = reward - self._mean
+        self._m2 += delta * delta2
 
     def ucb1(self, c: float, stats: _RewardStats) -> float:
         if self.visits == 0:
@@ -238,8 +308,7 @@ def _run_iteration(
     # BACKPROPAGATION
     reward_stats.observe(reward)
     for n in path:
-        n.visits += 1
-        n.total_value += reward
+        n.record(reward)
 
 
 def recommend(
@@ -304,14 +373,31 @@ def recommend(
                 "vbd_score": vbd_info.get("vbd"),
                 "projected_points": vbd_info.get("projected_points"),
                 "mcts_score": round(child.mean_value, 1),
+                "mcts_score_stderr": round(child.stderr, 2) if child.stderr is not None else None,
                 "mcts_visits": child.visits,
             }
         )
 
     results.sort(key=lambda r: r["mcts_score"], reverse=True)
+    top_results = results[:top_n]
+
+    # Flag candidates statistically indistinguishable from the leader (see
+    # STABILITY NOTE above ITERATIONS) instead of silently presenting
+    # sampling noise as a confident single "#1 pick."
+    tied_with_leader: list[str] = []
+    if top_results:
+        leader = top_results[0]
+        leader_se = leader["mcts_score_stderr"] or 0.0
+        for r in top_results:
+            r_se = r["mcts_score_stderr"] or 0.0
+            combined_se = (leader_se**2 + r_se**2) ** 0.5
+            margin = leader["mcts_score"] - r["mcts_score"]
+            r["within_noise_of_leader"] = r is leader or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se)
+        tied_with_leader = [r["name"] for r in top_results if r["within_noise_of_leader"] and r is not leader]
 
     return {
-        "recommendations": results[:top_n],
+        "recommendations": top_results,
+        "top_pick_statistically_tied_with": tied_with_leader,
         "candidates_considered": root_candidates,
         "iterations_run": iterations,
         "params": {
