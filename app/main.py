@@ -21,6 +21,7 @@ from app.config import (
 from app.routers.mcts import router as mcts_router
 from app.routers.portfolio import router as portfolio_router
 from app.routers.rankings import router as rankings_router
+from app.routers.shapley import router as shapley_router
 from app.routers.simulate import router as simulate_router
 from app.services.sleeper import SleeperAPIError, sleeper_client
 
@@ -34,6 +35,7 @@ app.include_router(rankings_router)
 app.include_router(simulate_router)
 app.include_router(mcts_router)
 app.include_router(portfolio_router)
+app.include_router(shapley_router)
 
 
 @app.get("/")

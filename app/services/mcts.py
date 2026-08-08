@@ -70,6 +70,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from app.services._stats import WelfordAccumulator
 from app.services.draft_state import DraftState
 from app.services.opponent_model import build_adp_proxy_ranks, sample_pick
 from app.services.portfolio import DEFAULT_RISK_AVERSION, evaluate_roster
@@ -155,10 +156,7 @@ class _RewardStats:
 
 
 class _Node:
-    __slots__ = (
-        "draft_state", "depth", "player_id", "parent", "children", "untried",
-        "visits", "_mean", "_m2",
-    )
+    __slots__ = ("draft_state", "depth", "player_id", "parent", "children", "untried", "_stats")
 
     def __init__(
         self,
@@ -174,45 +172,27 @@ class _Node:
         self.parent = parent
         self.children: dict[str, "_Node"] = {}
         self.untried = untried
-        self.visits = 0
-        self._mean = 0.0
-        self._m2 = 0.0  # Welford's running sum of squared deviations from the mean
+        self._stats = WelfordAccumulator()  # see app/services/_stats.py -- numerically stable at this reward scale
+
+    @property
+    def visits(self) -> int:
+        return self._stats.visits
 
     @property
     def mean_value(self) -> float:
-        return self._mean
+        return self._stats.mean
 
     @property
     def stderr(self) -> Optional[float]:
         """
-        Standard error of `mean_value`, from the running sample variance of
-        rewards backpropagated through this node. None with fewer than 2
-        visits (variance undefined). Used to flag near-ties between top
+        Standard error of `mean_value`. None with fewer than 2 visits
+        (variance undefined). Used to flag near-ties between top
         candidates -- see the STABILITY NOTE above `ITERATIONS`.
         """
-        if self.visits < 2:
-            return None
-        variance = self._m2 / self.visits
-        return (variance / self.visits) ** 0.5
+        return self._stats.stderr
 
     def record(self, reward: float) -> None:
-        """
-        Welford's online mean/variance update. Rewards here are simulated
-        SEASON POINT TOTALS (mean sits around 1000+ once a roster has a few
-        players), and a naive `sum(x^2)/n - mean^2` variance formula was
-        tried first here and rejected -- it subtracts two very large,
-        very close numbers (~mean^2 each) to get a comparatively tiny
-        variance, so float error swamps the result (observed: it reported
-        a standard error ~15x larger than the deviation actually seen
-        across repeated live runs). Welford's formula only ever works with
-        deviations from the running mean, which stay small, so it doesn't
-        have that cancellation problem.
-        """
-        self.visits += 1
-        delta = reward - self._mean
-        self._mean += delta / self.visits
-        delta2 = reward - self._mean
-        self._m2 += delta * delta2
+        self._stats.record(reward)
 
     def ucb1(self, c: float, stats: _RewardStats) -> float:
         if self.visits == 0:

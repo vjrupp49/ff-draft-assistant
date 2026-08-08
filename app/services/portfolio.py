@@ -72,6 +72,26 @@ from app.services.simulation import DEFAULT_NUM_SIMS, simulate_players
 # draft-worthy players, without swamping mean differences outright.
 # Recalibrate this constant if real roster sizes/variances in practice
 # turn out very different from what was tested here.
+#
+# CHUNK 6 SENSITIVITY CHECK (kept as-is; documenting the check rather than
+# the constant, since it didn't change): Chunk 5 found a REALISTIC partial
+# stack (2-of-3 shared team, e.g. a QB + one of his own pass-catchers) only
+# moves the score by ~1 point at 0.004 -- small next to MCTS's own ~10-14
+# point sampling noise. Swept 0.004/0.01/0.02/0.05/0.08 against both that
+# partial-stack case and the EXTREME 5-of-5-same-team case: raising
+# RISK_AVERSION enough to make a partial stack's penalty compete with
+# MCTS's noise floor (~0.05-0.08) inflates the extreme case's penalty from
+# -11 points to -288 to -468 points -- wildly disproportionate to the ~13
+# point raw mean gap driving that comparison, and a parallel check (a
+# modestly-wider-variance "unknown" player vs. a similar-mean steadier
+# veteran) confirmed the same setting starts inverting variance-driven
+# value ordering hard enough to bury a legitimately higher-mean pick under
+# a lower-mean "safer" one. A partial stack genuinely doesn't carry much
+# absolute risk at this scale -- that's a real finding, not a
+# miscalibration -- and the fix for it not visibly moving MCTS's ranking
+# belongs in reducing MCTS's OWN estimation noise (more iterations/sims),
+# not in distorting this coefficient past what's defensible for pricing
+# risk on its own terms. Left at 0.004.
 DEFAULT_RISK_AVERSION = 0.004
 
 
