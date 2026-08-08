@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/players_cache.json
+data/baseline_projections.json
+.env
+server.log
