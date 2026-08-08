@@ -19,6 +19,7 @@ from app.config import (
     SLEEPER_LEAGUE_ID,
 )
 from app.routers.rankings import router as rankings_router
+from app.routers.simulate import router as simulate_router
 from app.services.sleeper import SleeperAPIError, sleeper_client
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +29,7 @@ app = FastAPI(title="FF Draft Assistant")
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(rankings_router)
+app.include_router(simulate_router)
 
 
 @app.get("/")
