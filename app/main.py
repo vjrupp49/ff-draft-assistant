@@ -19,6 +19,7 @@ from app.config import (
     SLEEPER_LEAGUE_ID,
 )
 from app.routers.mcts import router as mcts_router
+from app.routers.portfolio import router as portfolio_router
 from app.routers.rankings import router as rankings_router
 from app.routers.simulate import router as simulate_router
 from app.services.sleeper import SleeperAPIError, sleeper_client
@@ -32,6 +33,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(rankings_router)
 app.include_router(simulate_router)
 app.include_router(mcts_router)
+app.include_router(portfolio_router)
 
 
 @app.get("/")

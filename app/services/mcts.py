@@ -43,17 +43,23 @@ verification notes for real numbers; tune ITERATIONS down first if a
 recommendation call needs to get faster, since it's the single biggest
 lever on total work done.
 
-REWARD SIGNAL: mean simulated season total of "my roster so far" at the
-end of a rollout (my pre-existing roster + every pick made along that
-rollout's path, tree picks and greedy-continuation picks alike).
-Comparing rewards across root candidates is apples-to-apples because every
-rollout adds exactly the same NUMBER of picks to my roster
-(TREE_DEPTH + ROLLOUT_EXTRA_PICKS) regardless of which candidate started
-it off -- so a candidate slightly behind on raw VBD right now can still
-win if opponent behavior (modeled via opponent_model.py) is likely to
-strip out the alternative position entirely before my next turn, leaving
-my downstream picks worse off. That scarcity effect is exactly what plain
-VBD cannot see on its own, and is the point of this chunk.
+REWARD SIGNAL: app.services.portfolio.evaluate_roster's RISK-ADJUSTED score
+(mean simulated season points minus a variance penalty, using the full
+roster covariance -- see that module) for "my roster so far" at the end of
+a rollout (my pre-existing roster + every pick made along that rollout's
+path, tree picks and greedy-continuation picks alike). Prior to this
+(Chunk 5), the reward was portfolio.py's precursor -- simulation.py's raw
+mean points, with no risk-awareness at all; see portfolio.py's own
+docstring for why that mattered enough to fix (this league's 6-of-10
+playoff format is meaningfully risk-sensitive). Comparing rewards across
+root candidates is apples-to-apples because every rollout adds exactly the
+same NUMBER of picks to my roster (TREE_DEPTH + ROLLOUT_EXTRA_PICKS)
+regardless of which candidate started it off -- so a candidate slightly
+behind on raw VBD right now can still win if opponent behavior (modeled
+via opponent_model.py) is likely to strip out the alternative position
+entirely before my next turn, leaving my downstream picks worse off. That
+scarcity effect is exactly what plain VBD cannot see on its own, and was
+the point of Chunk 4; risk-awareness on top of it is the point of Chunk 5.
 """
 
 from __future__ import annotations
@@ -66,7 +72,7 @@ import numpy as np
 
 from app.services.draft_state import DraftState
 from app.services.opponent_model import build_adp_proxy_ranks, sample_pick
-from app.services.simulation import simulate_roster_summary
+from app.services.portfolio import DEFAULT_RISK_AVERSION, evaluate_roster
 from app.services.vbd import calculate_vbd
 
 logger = logging.getLogger("ff_draft_assistant.mcts")
@@ -260,6 +266,7 @@ def _run_iteration(
     candidate_breadth: int,
     rollout_extra_picks: int,
     rollout_sim_count: int,
+    risk_aversion: float,
 ) -> None:
     # SELECTION: descend via UCB1 (normalized, see _RewardStats) while fully expanded.
     node = root
@@ -300,10 +307,12 @@ def _run_iteration(
         rollout_state.add_pick(candidates[0]["player_id"])
         _advance_opponents(rollout_state, players_by_id, adp_ranks, rng)
 
-    # EVALUATE: simulate my accumulated roster's season outcome.
+    # EVALUATE: risk-adjusted value of my accumulated roster (portfolio.py).
     my_roster_ids = rollout_state.roster_player_ids()
     my_roster_players = [players_by_id[pid] for pid in my_roster_ids if pid in players_by_id]
-    reward = simulate_roster_summary(my_roster_players, num_sims=rollout_sim_count, seed=None)["roster"]["mean"]
+    reward = evaluate_roster(
+        my_roster_players, risk_aversion=risk_aversion, num_sims=rollout_sim_count, seed=None
+    )["risk_adjusted_score"]
 
     # BACKPROPAGATION
     reward_stats.observe(reward)
@@ -320,6 +329,7 @@ def recommend(
     tree_depth: int = TREE_DEPTH,
     rollout_extra_picks: int = ROLLOUT_EXTRA_PICKS,
     rollout_sim_count: int = ROLLOUT_SIM_COUNT,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
     seed: Optional[int] = None,
 ) -> dict[str, Any]:
     """
@@ -359,6 +369,7 @@ def recommend(
             candidate_breadth,
             rollout_extra_picks,
             rollout_sim_count,
+            risk_aversion,
         )
 
     results = []
@@ -405,5 +416,6 @@ def recommend(
             "candidate_breadth": candidate_breadth,
             "rollout_extra_picks": rollout_extra_picks,
             "rollout_sim_count": rollout_sim_count,
+            "risk_aversion": risk_aversion,
         },
     }

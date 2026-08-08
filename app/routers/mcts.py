@@ -45,6 +45,11 @@ class MctsRecommendRequest(BaseModel):
     tree_depth: int = Field(default=mcts_service.TREE_DEPTH, ge=1, le=4)
     rollout_extra_picks: int = Field(default=mcts_service.ROLLOUT_EXTRA_PICKS, ge=0, le=5)
     rollout_sim_count: int = Field(default=mcts_service.ROLLOUT_SIM_COUNT, ge=20, le=2000)
+    risk_aversion: float = Field(
+        default=mcts_service.DEFAULT_RISK_AVERSION,
+        ge=0,
+        description="Markowitz risk-aversion coefficient (see app/services/portfolio.py). 0 = ignore variance entirely.",
+    )
     seed: Optional[int] = Field(default=None)
 
 
@@ -92,6 +97,7 @@ async def mcts_recommend(request: MctsRecommendRequest) -> dict[str, Any]:
         tree_depth=request.tree_depth,
         rollout_extra_picks=request.rollout_extra_picks,
         rollout_sim_count=request.rollout_sim_count,
+        risk_aversion=request.risk_aversion,
         seed=request.seed,
     )
     runtime_seconds = round(time.perf_counter() - t0, 3)
