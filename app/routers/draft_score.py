@@ -11,11 +11,12 @@ function (see mcts.py's REWARD SIGNAL note and portfolio.py). Shapley
 (app.services.shapley) is not a second score to average against it --
 it's the EXPLANATION layer: given the roster this candidate would join,
 how much does adding them actually change its risk-adjusted value, and
-would they project as a starter or a discounted bench contributor. This
-route is a thin orchestration layer over those two already-verified
-engines (one MCTS run + one Shapley run on "my roster + this candidate"),
-not a new modeling component -- it duplicates no scoring logic of its
-own.
+would they project as a starter or a discounted bench contributor.
+
+The actual computation lives in app/services/draft_score_engine.py (Chunk
+11 extracted it there so app/services/draft_live.py's tiered live-draft
+recompute could call the identical logic without going through HTTP or
+duplicating it) -- this router is now a thin request/response wrapper.
 
 A statistical tie (Chunk 4.5) is surfaced as part of the honest single
 score, not hidden -- see `statistically_tied_with_top_pick` below.
@@ -30,8 +31,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import Field
 
 from app.routers._shared import DraftStateRequest, resolve_draft_state
+from app.services import draft_score_engine
 from app.services import mcts as mcts_service
-from app.services import portfolio as portfolio_service
 from app.services import shapley as shapley_service
 from app.services.projections import build_baseline_projections
 
@@ -66,81 +67,24 @@ async def draft_score(request: DraftScoreRequest) -> dict[str, Any]:
     draft_state = await resolve_draft_state(request)
 
     t0 = time.perf_counter()
-
-    # 1) The Draft Score itself -- MCTS's value estimate. top_n=candidate_breadth
-    # so every candidate MCTS actually evaluated comes back (it never
-    # evaluates more than candidate_breadth candidates), not just a
-    # truncated top-N.
-    mcts_result = mcts_service.recommend(
-        draft_state,
-        players_by_id,
-        top_n=request.candidate_breadth,
-        iterations=request.iterations,
-        candidate_breadth=request.candidate_breadth,
-        tree_depth=request.tree_depth,
-        rollout_extra_picks=request.rollout_extra_picks,
-        rollout_sim_count=request.rollout_sim_count,
-        risk_aversion=request.risk_aversion,
-        seed=request.seed,
-    )
-    recommendations = mcts_result["recommendations"]
-    if not recommendations:
-        raise HTTPException(
-            status_code=404, detail="MCTS found no candidate players to evaluate for this draft state."
+    try:
+        result = draft_score_engine.compute_draft_score(
+            draft_state,
+            players_by_id,
+            candidate_player_id=request.candidate_player_id,
+            iterations=request.iterations,
+            candidate_breadth=request.candidate_breadth,
+            tree_depth=request.tree_depth,
+            rollout_extra_picks=request.rollout_extra_picks,
+            rollout_sim_count=request.rollout_sim_count,
+            risk_aversion=request.risk_aversion,
+            seed=request.seed,
+            shapley_num_permutations=request.shapley_num_permutations,
+            shapley_num_sims=request.shapley_num_sims,
+            shapley_seed=request.shapley_seed,
         )
-
-    if request.candidate_player_id:
-        focus = next((r for r in recommendations if r["player_id"] == request.candidate_player_id), None)
-        if focus is None:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"player_id '{request.candidate_player_id}' was not among the "
-                    f"{len(recommendations)} candidates MCTS evaluated this run (the top "
-                    f"{request.candidate_breadth} available players by VBD). Raise candidate_breadth "
-                    "to include it, or omit candidate_player_id to use MCTS's own top pick."
-                ),
-            )
-    else:
-        focus = max(recommendations, key=lambda r: r["mcts_score"])
-
-    # 2) The explanation layer -- Shapley marginal contribution of adding
-    # the focus candidate to MY roster as it stands right now.
-    focus_player = players_by_id[focus["player_id"]]
-    my_roster_ids = draft_state.roster_player_ids()
-    my_roster_players = [players_by_id[pid] for pid in my_roster_ids if pid in players_by_id]
-    roster_with_focus = my_roster_players + [focus_player]
-
-    shapley_result = shapley_service.evaluate_shapley(
-        roster_with_focus,
-        risk_aversion=request.risk_aversion,
-        num_permutations=request.shapley_num_permutations,
-        num_sims=request.shapley_num_sims,
-        seed=request.shapley_seed,
-    )
-    focus_shapley = next(p for p in shapley_result["players"] if p["player_id"] == focus_player["player_id"])
-
-    # Starter/bench status + the (rank-decayed, Chunk 10) discount actually
-    # applied -- pulled from portfolio.py's own authoritative computation
-    # rather than re-deriving it here, so this can never drift from what
-    # the Draft Score itself is built on.
-    portfolio_result = portfolio_service.evaluate_roster(
-        roster_with_focus, risk_aversion=request.risk_aversion, num_sims=request.shapley_num_sims, seed=request.shapley_seed
-    )
-    focus_portfolio = next(p for p in portfolio_result["players"] if p["player_id"] == focus_player["player_id"])
-    is_starter = focus_portfolio["is_starter"]
-    bench_discount = focus_portfolio["bench_discount_applied"]
-    bench_rank = focus_portfolio["bench_rank"]
-
-    if is_starter:
-        note = "Projected to occupy a starting lineup slot on your current roster."
-    else:
-        note = (
-            f"Projected to sit on your bench given your current roster (rank #{bench_rank} bench "
-            f"{focus_player.get('position')} on this roster) -- discounted to {bench_discount:.0%} value "
-            "in the Draft Score above (see app/services/portfolio.py)."
-        )
-
+    except draft_score_engine.DraftScoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     runtime_seconds = round(time.perf_counter() - t0, 3)
 
     return {
@@ -148,33 +92,5 @@ async def draft_score(request: DraftScoreRequest) -> dict[str, Any]:
         "current_pick_no": draft_state.current_pick_no,
         "current_round": draft_state.current_round,
         "runtime_seconds": runtime_seconds,
-        "draft_score": {
-            "player_id": focus["player_id"],
-            "name": focus["name"],
-            "position": focus["position"],
-            "team": focus["team"],
-            "score": focus["mcts_score"],
-            "score_stderr": focus["mcts_score_stderr"],
-            "vbd_score": focus["vbd_score"],
-            "statistically_tied_with_top_pick": focus.get("within_noise_of_leader"),
-        },
-        "explanation": {
-            "marginal_value": focus_shapley["shapley_value"],
-            "marginal_value_stderr": focus_shapley["stderr"],
-            "projected_role": "starter" if is_starter else "bench",
-            "bench_rank": bench_rank,
-            "bench_discount_applied": bench_discount,
-            "roster_evaluated": [p["player_id"] for p in roster_with_focus],
-            "note": note,
-        },
-        "alternatives_considered": [
-            {
-                "player_id": r["player_id"],
-                "name": r["name"],
-                "position": r["position"],
-                "score": r["mcts_score"],
-            }
-            for r in sorted(recommendations, key=lambda r: -r["mcts_score"])
-            if r["player_id"] != focus["player_id"]
-        ][:5],
+        **result,
     }
