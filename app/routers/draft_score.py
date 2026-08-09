@@ -31,10 +31,9 @@ from pydantic import Field
 
 from app.routers._shared import DraftStateRequest, resolve_draft_state
 from app.services import mcts as mcts_service
+from app.services import portfolio as portfolio_service
 from app.services import shapley as shapley_service
-from app.services.portfolio import BENCH_VALUE_DISCOUNT, DEFAULT_BENCH_DISCOUNT
 from app.services.projections import build_baseline_projections
-from app.services.vbd import allocate_roster_starters
 
 router = APIRouter()
 
@@ -121,16 +120,25 @@ async def draft_score(request: DraftScoreRequest) -> dict[str, Any]:
     )
     focus_shapley = next(p for p in shapley_result["players"] if p["player_id"] == focus_player["player_id"])
 
-    starter_ids = allocate_roster_starters(roster_with_focus)
-    is_starter = focus_player["player_id"] in starter_ids
-    bench_discount = None if is_starter else BENCH_VALUE_DISCOUNT.get(focus_player.get("position"), DEFAULT_BENCH_DISCOUNT)
+    # Starter/bench status + the (rank-decayed, Chunk 10) discount actually
+    # applied -- pulled from portfolio.py's own authoritative computation
+    # rather than re-deriving it here, so this can never drift from what
+    # the Draft Score itself is built on.
+    portfolio_result = portfolio_service.evaluate_roster(
+        roster_with_focus, risk_aversion=request.risk_aversion, num_sims=request.shapley_num_sims, seed=request.shapley_seed
+    )
+    focus_portfolio = next(p for p in portfolio_result["players"] if p["player_id"] == focus_player["player_id"])
+    is_starter = focus_portfolio["is_starter"]
+    bench_discount = focus_portfolio["bench_discount_applied"]
+    bench_rank = focus_portfolio["bench_rank"]
 
     if is_starter:
         note = "Projected to occupy a starting lineup slot on your current roster."
     else:
         note = (
-            f"Projected to sit on your bench given your current roster -- discounted to "
-            f"{bench_discount:.0%} value in the Draft Score above (see app/services/portfolio.py)."
+            f"Projected to sit on your bench given your current roster (rank #{bench_rank} bench "
+            f"{focus_player.get('position')} on this roster) -- discounted to {bench_discount:.0%} value "
+            "in the Draft Score above (see app/services/portfolio.py)."
         )
 
     runtime_seconds = round(time.perf_counter() - t0, 3)
@@ -154,6 +162,7 @@ async def draft_score(request: DraftScoreRequest) -> dict[str, Any]:
             "marginal_value": focus_shapley["shapley_value"],
             "marginal_value_stderr": focus_shapley["stderr"],
             "projected_role": "starter" if is_starter else "bench",
+            "bench_rank": bench_rank,
             "bench_discount_applied": bench_discount,
             "roster_evaluated": [p["player_id"] for p in roster_with_focus],
             "note": note,

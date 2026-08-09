@@ -98,7 +98,13 @@ from typing import Any, Optional
 import numpy as np
 
 from app.services._stats import WelfordAccumulator
-from app.services.portfolio import BENCH_VALUE_DISCOUNT, DEFAULT_BENCH_DISCOUNT, DEFAULT_RISK_AVERSION
+from app.services.portfolio import (
+    BENCH_DISCOUNT_BASE,
+    BENCH_DISCOUNT_DECAY,
+    DEFAULT_RISK_AVERSION,
+    bench_discount_for,
+    compute_bench_ranks,
+)
 from app.services.simulation import DEFAULT_NUM_SIMS, simulate_players
 from app.services.vbd import allocate_roster_starters
 
@@ -116,26 +122,31 @@ def _weighted_value(
     prefix_players: list[dict[str, Any]],
     per_player_totals: dict[str, np.ndarray],
     risk_aversion: float,
-    discount_by_position: dict[str, float],
+    base_by_position: dict[str, float],
+    decay_by_position: dict[str, float],
     num_sims: int,
 ) -> float:
     """
     portfolio.py's mean-minus-variance-penalty objective, applied to a
     specific subset of the roster -- determines THIS subset's own
     starters/bench (see module docstring on why that must be re-derived
-    per subset, not inherited from the full roster) and sums each
-    player's simulated draws at full value (starter) or discounted value
-    (bench) before computing mean/variance, exactly mirroring
-    portfolio.evaluate_roster's math.
+    per subset, not inherited from the full roster) AND this subset's own
+    bench ranks (Chunk 10 -- a player's rank among same-position bench
+    players is also a property of the subset, same reasoning as
+    starter/bench itself), then sums each player's simulated draws at full
+    value (starter) or rank-decayed discounted value (bench) before
+    computing mean/variance, exactly mirroring portfolio.evaluate_roster's
+    math.
     """
     starter_ids = allocate_roster_starters(prefix_players)
+    bench_ranks = compute_bench_ranks(prefix_players, starter_ids, per_player_totals)
     weighted_sum = np.zeros(num_sims)
     for p in prefix_players:
         pid = p["player_id"]
         if pid in starter_ids:
             weighted_sum += per_player_totals[pid]
         else:
-            discount = discount_by_position.get(p.get("position"), DEFAULT_BENCH_DISCOUNT)
+            discount = bench_discount_for(p.get("position"), bench_ranks[pid], base_by_position, decay_by_position)
             weighted_sum += per_player_totals[pid] * discount
 
     mean = float(weighted_sum.mean())
@@ -148,7 +159,8 @@ def evaluate_shapley(
     risk_aversion: float = DEFAULT_RISK_AVERSION,
     num_permutations: int = NUM_PERMUTATIONS,
     num_sims: int = SHAPLEY_NUM_SIMS,
-    bench_value_discount: Optional[dict[str, float]] = None,
+    bench_discount_base: Optional[dict[str, float]] = None,
+    bench_discount_decay: Optional[dict[str, float]] = None,
     seed: Optional[int] = None,
 ) -> dict[str, Any]:
     """
@@ -172,7 +184,8 @@ def evaluate_shapley(
             "risk_aversion": risk_aversion,
         }
 
-    discount_by_position = bench_value_discount or BENCH_VALUE_DISCOUNT
+    base_by_position = bench_discount_base or BENCH_DISCOUNT_BASE
+    decay_by_position = bench_discount_decay or BENCH_DISCOUNT_DECAY
     rng = np.random.default_rng(seed)
 
     player_ids = [p["player_id"] for p in roster_players]
@@ -187,7 +200,9 @@ def evaluate_shapley(
         prev_value = 0.0  # value of the empty set is 0 by construction
         for k in range(1, n + 1):
             prefix_players = [roster_players[i] for i in order_indices[:k]]
-            value = _weighted_value(prefix_players, per_player_totals, risk_aversion, discount_by_position, num_sims)
+            value = _weighted_value(
+                prefix_players, per_player_totals, risk_aversion, base_by_position, decay_by_position, num_sims
+            )
             newest_pid = player_ids[order_indices[k - 1]]
             accumulators[newest_pid].record(value - prev_value)
             prev_value = value
@@ -220,7 +235,9 @@ def evaluate_shapley(
         r["within_noise_of_leader"] = r is leader or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se)
 
     sum_of_shapley = sum(r["shapley_value"] for r in results)
-    roster_value = _weighted_value(roster_players, per_player_totals, risk_aversion, discount_by_position, num_sims)
+    roster_value = _weighted_value(
+        roster_players, per_player_totals, risk_aversion, base_by_position, decay_by_position, num_sims
+    )
 
     return {
         "players": results,
