@@ -24,6 +24,7 @@
   var heroName = document.getElementById("hero-name");
   var heroScore = document.getElementById("hero-score");
   var heroWhy = document.getElementById("hero-why");
+  var provisionalBanner = document.getElementById("provisional-banner");
 
   var altsList = document.getElementById("alts-list");
 
@@ -103,15 +104,42 @@
 
   // ---- websocket ----
 
+  // Reconnect with backoff on drop -- found by actually restarting the
+  // server mid-draft (Chunk 12 real-Sleeper dry run) that a dropped
+  // connection just sat on "DISCONNECTED" forever with no retry. On a
+  // real phone during a real draft (screen lock, wifi blip, brief server
+  // hiccup) that's a silent-failure risk this app exists to prevent, so
+  // this reconnects automatically rather than requiring a manual reload.
+  // A fresh connection's register() always sends a full snapshot, which
+  // applySnapshot() uses to resync the whole screen (headline, hero card,
+  // feed, counts) -- no separate "catch up" path needed.
+  var RECONNECT_DELAY_MS = 2000;
+  var reconnectTimer = null;
+
   function connectWebSocket() {
     var proto = location.protocol === "https:" ? "wss" : "ws";
     var ws = new WebSocket(proto + "://" + location.host + "/ws/draft-live");
+    ws.onopen = function () {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
     ws.onmessage = function (event) {
       var msg = JSON.parse(event.data);
       handleMessage(msg);
     };
     ws.onclose = function () {
-      sessionPill.textContent = "DISCONNECTED";
+      sessionPill.textContent = "RECONNECTING…";
+      if (!reconnectTimer) {
+        reconnectTimer = setTimeout(function () {
+          reconnectTimer = null;
+          connectWebSocket();
+        }, RECONNECT_DELAY_MS);
+      }
+    };
+    ws.onerror = function () {
+      ws.close();
     };
   }
 
@@ -213,12 +241,15 @@
     heroTie.classList.toggle("hidden", !ds.statistically_tied_with_top_pick);
 
     animateScore(Math.round(ds.score));
-    var whyText = explanationToText(ex);
-    if (payload.is_provisional) {
-      whyText += " (preview — opponents haven't picked yet)";
-    }
-    heroWhy.textContent = whyText;
+    heroWhy.textContent = explanationToText(ex);
     renderAlts(alts);
+
+    // Persistent, high-contrast signal that this number is a projection
+    // against simulated opponent picks, not a confirmed result -- see
+    // the .provisional CSS rule for why this replaced a subtle inline
+    // parenthetical (Chunk 11 follow-up: it was too easy to miss).
+    heroCard.classList.toggle("provisional", !!payload.is_provisional);
+    provisionalBanner.classList.toggle("hidden", !payload.is_provisional);
 
     if (!isReplay) updateCounts(undefined, undefined, 0, 1);
     if (payload.current_round) updateHeadline(payload);

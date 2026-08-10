@@ -269,6 +269,22 @@ html, body {
 }
 .hero-card.recalculating .hero-glow { opacity: 1; }
 
+/* Persistent "this number is a projection, not final" state -- distinct
+   from .recalculating above (which is a transient pulse only while a
+   compute is actually in flight). .provisional stays on, dashed rather
+   than pulsing, for as long as the last delivered Draft Score was a
+   preview against simulated opponent picks (see draft_live.py's
+   is_provisional). Found in Chunk 11 that a parenthetical in the body
+   text was too easy to miss for a glanceable second-screen -- this is
+   the fix: a persistent banner + a border treatment + recoloring the
+   score itself, so a provisional number is never visually confusable
+   with a confirmed one even at a glance. */
+.hero-card.provisional {
+  border-color: var(--recalc);
+  border-style: dashed;
+}
+.hero-card.provisional .hero-score { color: var(--recalc); }
+
 .hero-glow {
   position: absolute;
   inset: -40% -20% auto -20%;
@@ -287,6 +303,23 @@ html, body {
   gap: 0.65rem;
   margin-bottom: 0.9rem;
 }
+
+.provisional-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--recalc);
+  color: #241400;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius-sm);
+  margin-bottom: 1.1rem;
+  box-shadow: 0 4px 18px -6px var(--recalc-glow);
+}
+.provisional-icon { font-size: 0.7rem; flex-shrink: 0; }
 
 .pos-pill {
   font-size: 0.75rem;

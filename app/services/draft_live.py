@@ -304,6 +304,7 @@ class DraftLiveManager:
             "type": "draft_score",
             "current_pick_no": state.current_pick_no,
             "current_round": state.current_round,
+            "is_my_turn": state.is_my_turn,
             "picks_until_your_turn": state.picks_until_next_turn(),
             "is_provisional": is_provisional,
             **result,
