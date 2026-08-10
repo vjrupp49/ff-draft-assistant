@@ -297,24 +297,32 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
     except adp.ADPError as exc:
         logger.warning("ADP fetch failed, falling back to Chunk 16-era behavior (no ADP signal): %s", exc)
 
+    # CHUNK 18: a second, deeper-sample fallback dataset (ADP_FALLBACK_FORMAT,
+    # "ppr") -- recovers real, evidenced false negatives the primary "2qb"
+    # format's smaller sample misses (see adp.py's CHUNK 18 AUDIT note for
+    # the concrete Conner/Hockenson case that motivated this). Optional --
+    # None here just means fewer recovered matches, not a broken pipeline.
+    adp_fallback_payload = await adp.fetch_fallback_adp() if adp_payload else None
+
     adp_lookup: dict[tuple[str, str], dict[str, Any]] = {}
     adp_by_position: dict[str, list[dict[str, Any]]] = {}
+    adp_fallback_lookup: Optional[dict[tuple[str, str], dict[str, Any]]] = None
+    adp_fallback_by_position: Optional[dict[str, list[dict[str, Any]]]] = None
     if adp_payload:
         adp_lookup = adp.build_adp_lookup(adp_payload)
         adp_by_position = adp.adp_ranks_by_position(adp_payload)
+    if adp_fallback_payload:
+        adp_fallback_lookup = adp.build_adp_lookup(adp_fallback_payload)
+        adp_fallback_by_position = adp.adp_ranks_by_position(adp_fallback_payload)
 
-    def _adp_percentile_for(name: str, position: str) -> Optional[float]:
-        """Looks up a player's ADP-derived percentile within their position, or None if not found in the ADP data."""
-        key = (adp._normalize_name(name), position)
-        ffc_player = adp_lookup.get(key)
-        if ffc_player is None:
-            return None
-        ranked = adp_by_position.get(position, [])
-        try:
-            rank = next(i for i, p in enumerate(ranked, start=1) if p is ffc_player)
-        except StopIteration:
-            return None
-        return adp.adp_percentile(rank, len(ranked))
+    def _find_adp_match(name: str, position: str) -> Optional[dict[str, Any]]:
+        """
+        Looks up a player's ADP match (primary "2qb" first, "ppr" fallback
+        second -- see adp.find_adp_match), returning the full match info
+        (record/source/percentile) so callers can also check team
+        agreement (Chunk 18 hardening) rather than just a bare percentile.
+        """
+        return adp.find_adp_match(name, position, adp_lookup, adp_by_position, adp_fallback_lookup, adp_fallback_by_position)
 
     players_out: list[dict[str, Any]] = []
     scored_points_by_position: dict[str, list[float]] = {}
@@ -355,8 +363,17 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
             record["team_changed"] = has_team_changed
 
             if has_team_changed:
-                adp_pct = _adp_percentile_for(record["name"], position)
-                if adp_pct is not None:
+                match = _find_adp_match(record["name"], position)
+                if match is not None:
+                    # CHUNK 18 hardening: surface (never silently discard --
+                    # a stale FFC entry right after a very recent trade is
+                    # plausible and the match is still likely correct) a
+                    # disagreement between Sleeper's live team and FFC's
+                    # reported team for this match. Chunk 18's full-pool
+                    # audit found zero real instances of this; it's a
+                    # forward-looking safety net, not a fix to an observed
+                    # failure -- see adp.py's team_agrees docstring.
+                    ffc_team_agrees = adp.team_agrees(base["team"], match["record"].get("team"))
                     stale_points = record["projected_points"]
                     # scored_points_by_position isn't fully built yet at this
                     # point in the loop (it's populated incrementally, same
@@ -369,17 +386,24 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
                     # but 100s of established players land before any given
                     # one in practice). A second pass isn't worth the added
                     # complexity for this non-degenerate a case.
-                    adp_pts = adp.adp_derived_points(position, adp_pct, scored_points_by_position)
+                    adp_pts = adp.adp_derived_points(position, match["percentile"], scored_points_by_position)
                     if adp_pts is not None:
                         blended = adp.ROLE_CHANGE_ADP_BLEND_WEIGHT * adp_pts + (1 - adp.ROLE_CHANGE_ADP_BLEND_WEIGHT) * stale_points
                         record["projected_points"] = round(blended, 1)
+                        source_note = "" if match["source"] == "primary" else f" (via {adp.ADP_FALLBACK_FORMAT}-format fallback -- not found in {adp.ADP_FORMAT})"
+                        team_note = (
+                            "" if ffc_team_agrees else
+                            f" CAUTION: ADP source reports team={match['record'].get('team')}, disagreeing with "
+                            f"Sleeper's team={base['team']} -- verify this is the same player, not a name collision."
+                        )
                         record["confidence_note"] = (
                             f"Team changed ({historical_team} -> {base['team']}) since this player's most recent "
                             "usable nfl_data_py season -- historical stats reflect the OLD team/role. Blended "
-                            f"{adp.ROLE_CHANGE_ADP_BLEND_WEIGHT:.0%} live market ADP-derived estimate with "
+                            f"{adp.ROLE_CHANGE_ADP_BLEND_WEIGHT:.0%} live market ADP-derived estimate{source_note} with "
                             f"{1 - adp.ROLE_CHANGE_ADP_BLEND_WEIGHT:.0%} the stale historical projection "
-                            f"({stale_points:.1f} pts pre-blend)."
+                            f"({stale_points:.1f} pts pre-blend).{team_note}"
                         )
+                        record["adp_team_agrees"] = ffc_team_agrees
                     else:
                         record["confidence_note"] = (
                             f"Team changed ({historical_team} -> {base['team']}) since this player's most recent "
@@ -389,7 +413,8 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
                 else:
                     record["confidence_note"] = (
                         f"Team changed ({historical_team} -> {base['team']}) since this player's most recent "
-                        "usable nfl_data_py season, and this player wasn't found in the live ADP data -- "
+                        "usable nfl_data_py season, and this player wasn't found in the live ADP data (checked "
+                        f"both {adp.ADP_FORMAT} and {adp.ADP_FALLBACK_FORMAT} formats) -- "
                         "projected_points still reflects the OLD team/role, unadjusted."
                     )
 
@@ -429,8 +454,8 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
             # regardless of actual market opinion). Falls back to the
             # original flat percentile only if this player has no ADP
             # entry either (still-obscure depth players).
-            adp_pct = _adp_percentile_for(record["name"], record["position"])
-            adp_pts = adp.adp_derived_points(record["position"], adp_pct, scored_points_by_position) if adp_pct is not None else None
+            match = _find_adp_match(record["name"], record["position"])
+            adp_pts = adp.adp_derived_points(record["position"], match["percentile"], scored_points_by_position) if match is not None else None
             if adp_pts is not None:
                 record["projected_points"] = round(adp_pts, 1)
                 # Tighter than the flat-fallback band below -- a real market
@@ -439,10 +464,23 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
                 # real multi-season spread (see adp.py's ROLE_CHANGE_ADP_BLEND_WEIGHT
                 # docstring for the equivalent judgment call on the blend side).
                 record["projected_points_stddev"] = round(adp_pts * 0.35, 1)
+                # CHUNK 18 hardening: same team-agreement surfacing as the
+                # role-change path (see that block's comment) -- checked
+                # against this player's current Sleeper team, since a
+                # rookie has no historical team to compare against.
+                ffc_team_agrees = adp.team_agrees(record["team"], match["record"].get("team"))
+                source_note = "" if match["source"] == "primary" else f" (via {adp.ADP_FALLBACK_FORMAT}-format fallback -- not found in {adp.ADP_FORMAT})"
+                team_note = (
+                    "" if ffc_team_agrees else
+                    f" CAUTION: ADP source reports team={match['record'].get('team')}, disagreeing with "
+                    f"Sleeper's team={record['team']} -- verify this is the same player, not a name collision."
+                )
+                record["adp_team_agrees"] = ffc_team_agrees
                 record["confidence_note"] = (
                     "No usable prior-season stats (rookie or very limited snaps) — projected_points is derived "
-                    f"from this player's live market ADP percentile ({adp_pct:.0f}th among {record['position']}s) "
-                    "mapped onto the real scored-player distribution at that position, not a flat fallback."
+                    f"from this player's live market ADP percentile ({match['percentile']:.0f}th among {record['position']}s)"
+                    f"{source_note} mapped onto the real scored-player distribution at that position, "
+                    f"not a flat fallback.{team_note}"
                 )
             else:
                 fallback = fallback_by_position.get(record["position"], 0.0)

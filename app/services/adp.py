@@ -55,6 +55,56 @@ this is rare enough at the top of any position's draft board to not be a
 practical concern for the players this module actually changes behavior
 for (see projections.py's usage). Unmatched players simply have no ADP
 signal available and fall back to prior behavior -- never a hard failure.
+
+CHUNK 18 AUDIT + HARDENING (full-pool, not a handful of examples --
+confirmed directly, not assumed): ran this module's actual matching
+logic across the real ~992-player Sleeper pool against the real live
+"2qb" dataset. Results:
+  - Match rate: 188/992 Sleeper players (19.0%) found a match -- expected
+    to be low, since most of the 992 include deep bench/practice-squad
+    players nobody drafts at all, not a red flag by itself. 188/220 FFC
+    entries (85.5%) matched back to a Sleeper player.
+  - Structural collision check: ZERO (name, position) keys collided
+    between two different real players on EITHER side of the join --
+    directly rules out the "two people, one ADP slot" mechanism this
+    audit was most worried about, for the CURRENT real NFL player pool
+    (a snapshot-in-time fact, not a permanent guarantee -- see
+    team_agrees below for the ongoing safety net).
+  - Task 2 (false positives -- the dangerous case): ZERO team
+    mismatches across all 188 matched pairs (Sleeper's live current
+    team vs. FFC's reported team agreed every single time), even though
+    team was NOT used as part of the match criteria at the time of this
+    audit. Strong, independent evidence the name-based matching isn't
+    silently misattributing players -- not proof it never could, but no
+    observed failures across the full real pool.
+  - Task 3 (false negatives): 40 real, fantasy-relevant players
+    (generously thresholded, e.g. James Conner at 218.8 proj points, a
+    real starting RB1) had NO match in "2qb" at all. Root-caused, not
+    assumed: "2qb"'s ADP range tops out around pick 174 (its total_drafts,
+    3,066, is meaningfully smaller than "ppr"'s 5,614) -- it simply
+    doesn't have the sample depth "ppr" does. Spot-checked directly: of 7
+    sample misses, "ppr" recovered 2 (James Conner ADP=171.5, T.J.
+    Hockenson ADP=154.1); the other 5 (Njoku, Fields, Engram, Kmet,
+    Freiermuth) were absent from BOTH datasets -- real committee/depth-
+    chart uncertainty the market itself hasn't consolidated around yet,
+    not a bug to fix here.
+
+HARDENING IMPLEMENTED (scoped to what the audit evidence actually
+supports, not a speculative rewrite):
+  1. ADP_FALLBACK_FORMAT ("ppr") + build_layered_adp_lookup / find_adp_match:
+     recovers real, evidenced false negatives like the Conner/Hockenson
+     case above. "2qb" (this league's actual format approximation) always
+     wins when both datasets have an entry -- the fallback only fires
+     when the primary format has none.
+  2. team_agrees(): a forward-looking safety net for the exact risk this
+     chunk's brief calls out (a wrong player silently matched, no flag) --
+     NOT a fix to an observed failure (Task 2 found zero), but a
+     near-zero-cost defensive check now that a SECOND, less-curated
+     fallback dataset is also in play. projections.py surfaces a
+     disagreement in confidence_note rather than silently discarding the
+     match (a stale FFC entry post-trade is plausible and shouldn't just
+     get thrown away), matching this chunk's "flag, don't blindly reject"
+     guidance.
 """
 
 from __future__ import annotations
@@ -75,9 +125,11 @@ logger = logging.getLogger("ff_draft_assistant.adp")
 
 ADP_API_BASE = "https://fantasyfootballcalculator.com/api/v1/adp"
 ADP_FORMAT = "2qb"  # closest available proxy for true SUPERFLEX -- see module docstring
+ADP_FALLBACK_FORMAT = "ppr"  # Chunk 18: deeper sample, recovers real "2qb"-only-missing false negatives -- see module docstring
 ADP_YEAR = 2026
 
 ADP_CACHE_PATH = "data/adp_cache.json"
+ADP_FALLBACK_CACHE_PATH = "data/adp_fallback_cache.json"
 # FFC's own guidance: "the data only updates once per day" and "please do
 # not call this API too frequently" -- reusing projections.py's existing
 # 24h TTL pattern is a direct match to that cadence, not an arbitrary
@@ -106,13 +158,27 @@ async def fetch_adp(
     teams: int = NUM_TEAMS,
     year: int = ADP_YEAR,
     force_refresh: bool = False,
+    cache_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Returns the raw FFC ADP payload ({"status", "meta", "players": [...]}),
-    cached to ADP_CACHE_PATH for up to ADP_CACHE_MAX_AGE_HOURS -- see
-    module docstring for why that TTL matches FFC's own update cadence.
+    cached to `cache_path` (defaults to ADP_CACHE_PATH, the primary-format
+    cache) for up to ADP_CACHE_MAX_AGE_HOURS -- see module docstring for
+    why that TTL matches FFC's own update cadence. `cache_path` is
+    parameterized (not hardcoded to ADP_CACHE_PATH) so the Chunk 18
+    fallback fetch (a different format, "ppr") gets its own cache file
+    rather than colliding with the primary "2qb" one.
+
+    `cache_path` defaults to None (resolved to the CURRENT value of
+    module-level ADP_CACHE_PATH inside the function body), not directly
+    to ADP_CACHE_PATH as the parameter default -- a default bound at
+    function-definition time would freeze in the value ADP_CACHE_PATH had
+    at import time, silently ignoring any later `monkeypatch.setattr(adp,
+    "ADP_CACHE_PATH", ...)` (exactly what tests/test_adp_integration.py's
+    isolated_adp_cache fixture does -- found this the hard way when
+    adding this parameter broke that pre-existing test).
     """
-    cache_file = Path(ADP_CACHE_PATH)
+    cache_file = Path(cache_path if cache_path is not None else ADP_CACHE_PATH)
     if not force_refresh and cache_file.exists():
         age_hours = (time.time() - cache_file.stat().st_mtime) / 3600
         if age_hours < ADP_CACHE_MAX_AGE_HOURS:
@@ -142,6 +208,20 @@ async def fetch_adp(
     with cache_file.open("w", encoding="utf-8") as f:
         json.dump(payload, f)
     return payload
+
+
+async def fetch_fallback_adp(force_refresh: bool = False) -> Optional[dict[str, Any]]:
+    """
+    Chunk 18: fetches ADP_FALLBACK_FORMAT ("ppr") for the deeper-sample
+    false-negative recovery described in the module docstring. Returns
+    None (not raises) on failure -- the fallback is explicitly optional;
+    losing it just means fewer recovered matches, not a broken pipeline.
+    """
+    try:
+        return await fetch_adp(fmt=ADP_FALLBACK_FORMAT, force_refresh=force_refresh, cache_path=ADP_FALLBACK_CACHE_PATH)
+    except ADPError as exc:
+        logger.warning("ADP fallback (%s) fetch failed, continuing without it: %s", ADP_FALLBACK_FORMAT, exc)
+        return None
 
 
 def build_adp_lookup(payload: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -198,6 +278,59 @@ def team_changed(historical_team: Optional[str], current_team: Optional[str]) ->
     unit-testable without needing the full async pipeline.
     """
     return bool(historical_team and current_team and historical_team != current_team)
+
+
+def team_agrees(sleeper_team: Optional[str], ffc_team: Optional[str]) -> bool:
+    """
+    Chunk 18 hardening -- see module docstring's TEAM AGREEMENT note.
+    True when both teams are known and match, OR when either side is
+    unknown (can't tell, not a disagreement). False is the "suspicious,
+    surface it" signal: Chunk 18's full-pool audit found zero real
+    instances of this firing, so it's a forward-looking safety net for
+    the exact "wrong player silently matched" risk this project's brief
+    calls out, not a fix to an observed failure.
+    """
+    if not sleeper_team or not ffc_team:
+        return True
+    return sleeper_team == ffc_team
+
+
+def find_adp_match(
+    name: str,
+    position: str,
+    primary_lookup: dict[tuple[str, str], dict[str, Any]],
+    primary_by_position: dict[str, list[dict[str, Any]]],
+    fallback_lookup: Optional[dict[tuple[str, str], dict[str, Any]]] = None,
+    fallback_by_position: Optional[dict[str, list[dict[str, Any]]]] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Chunk 18: looks up a player in the primary (ADP_FORMAT, "2qb") ADP
+    data first, falling back to ADP_FALLBACK_FORMAT ("ppr") only if the
+    primary has no entry -- see module docstring for the evidenced
+    false-negative gap this recovers (e.g. James Conner, T.J. Hockenson).
+    "2qb" always wins when both have an entry, since it's this league's
+    actual format approximation (see ADP_FORMAT's own reasoning).
+
+    Returns None if not found in either, else
+    {"record": ffc_player_record, "source": "primary"|"fallback",
+     "percentile": float in [0,100]}.
+    """
+    key = (_normalize_name(name), position)
+    sources = [(primary_lookup, primary_by_position, "primary")]
+    if fallback_lookup is not None:
+        sources.append((fallback_lookup, fallback_by_position or {}, "fallback"))
+
+    for lookup, by_position, source in sources:
+        record = lookup.get(key)
+        if record is None:
+            continue
+        ranked = by_position.get(position, [])
+        try:
+            rank = next(i for i, p in enumerate(ranked, start=1) if p is record)
+        except StopIteration:
+            continue  # shouldn't happen (record came from this same lookup) -- fail soft, try next source
+        return {"record": record, "source": source, "percentile": adp_percentile(rank, len(ranked))}
+    return None
 
 
 def adp_derived_points(

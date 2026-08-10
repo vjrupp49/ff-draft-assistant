@@ -104,6 +104,86 @@ def test_team_changed_false_when_either_side_unknown():
 
 
 # ---------------------------------------------------------------------
+# Chunk 18: hardening added after a full-pool audit found zero team
+# mismatches (no observed false positives) but a real, evidenced false-
+# negative gap the "2qb" primary format alone missed. team_agrees() and
+# find_adp_match()'s primary-then-fallback lookup are both pure
+# functions, no network needed.
+# ---------------------------------------------------------------------
+
+def test_team_agrees_true_when_teams_match():
+    assert adp.team_agrees("KC", "KC") is True
+
+
+def test_team_agrees_false_when_teams_differ():
+    # The exact "dangerous case" this chunk's audit hunted for -- a
+    # disagreement here is the signal something might be a wrong-player
+    # match, not just a stale entry.
+    assert adp.team_agrees("PIT", "DAL") is False
+
+
+def test_team_agrees_true_when_either_side_unknown():
+    # Same "can't tell != disagreement" principle as team_changed above.
+    assert adp.team_agrees(None, "DAL") is True
+    assert adp.team_agrees("PIT", None) is True
+
+
+def test_find_adp_match_prefers_primary_over_fallback():
+    primary_payload = {"players": [{"name": "Same Player", "position": "RB", "adp": 10.0, "team": "KC"}]}
+    fallback_payload = {"players": [{"name": "Same Player", "position": "RB", "adp": 5.0, "team": "KC"}]}
+    primary_lookup = adp.build_adp_lookup(primary_payload)
+    primary_by_pos = adp.adp_ranks_by_position(primary_payload)
+    fallback_lookup = adp.build_adp_lookup(fallback_payload)
+    fallback_by_pos = adp.adp_ranks_by_position(fallback_payload)
+
+    match = adp.find_adp_match("Same Player", "RB", primary_lookup, primary_by_pos, fallback_lookup, fallback_by_pos)
+    assert match is not None
+    assert match["source"] == "primary"
+    assert match["record"]["adp"] == 10.0  # the PRIMARY entry, not fallback's 5.0
+
+
+def test_find_adp_match_falls_back_when_not_in_primary():
+    # Mirrors the real James Conner case this chunk traced: absent from
+    # "2qb" (too small a sample to reach that deep), present in "ppr".
+    primary_payload = {"players": [{"name": "Someone Else", "position": "RB", "adp": 10.0, "team": "KC"}]}
+    fallback_payload = {"players": [{"name": "Fallback Only Player", "position": "RB", "adp": 171.5, "team": "ARI"}]}
+    primary_lookup = adp.build_adp_lookup(primary_payload)
+    primary_by_pos = adp.adp_ranks_by_position(primary_payload)
+    fallback_lookup = adp.build_adp_lookup(fallback_payload)
+    fallback_by_pos = adp.adp_ranks_by_position(fallback_payload)
+
+    match = adp.find_adp_match("Fallback Only Player", "RB", primary_lookup, primary_by_pos, fallback_lookup, fallback_by_pos)
+    assert match is not None
+    assert match["source"] == "fallback"
+    assert match["record"]["team"] == "ARI"
+
+
+def test_find_adp_match_returns_none_when_absent_from_both():
+    primary_payload = {"players": [{"name": "Someone", "position": "RB", "adp": 10.0, "team": "KC"}]}
+    fallback_payload = {"players": [{"name": "Someone Else", "position": "RB", "adp": 20.0, "team": "SF"}]}
+    primary_lookup = adp.build_adp_lookup(primary_payload)
+    primary_by_pos = adp.adp_ranks_by_position(primary_payload)
+    fallback_lookup = adp.build_adp_lookup(fallback_payload)
+    fallback_by_pos = adp.adp_ranks_by_position(fallback_payload)
+
+    match = adp.find_adp_match("Nobody Home", "RB", primary_lookup, primary_by_pos, fallback_lookup, fallback_by_pos)
+    assert match is None
+
+
+def test_find_adp_match_works_without_a_fallback_dataset():
+    # fetch_fallback_adp() returning None (network failure) shouldn't break
+    # matching against the primary dataset -- confirms find_adp_match's
+    # fallback_lookup=None default path.
+    primary_payload = {"players": [{"name": "Solo Player", "position": "WR", "adp": 15.0, "team": "BUF"}]}
+    primary_lookup = adp.build_adp_lookup(primary_payload)
+    primary_by_pos = adp.adp_ranks_by_position(primary_payload)
+
+    match = adp.find_adp_match("Solo Player", "WR", primary_lookup, primary_by_pos)
+    assert match is not None
+    assert match["source"] == "primary"
+
+
+# ---------------------------------------------------------------------
 # Task 5c: caching respects FFC's "don't call this too frequently"
 # guidance -- the real network call is mocked, never hit for real here.
 # ---------------------------------------------------------------------
