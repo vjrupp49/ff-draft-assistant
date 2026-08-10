@@ -45,6 +45,42 @@ need attention if `build_baseline_projections()` (see conftest.py's
 `players_by_id` fixture) ever stops producing entries for one of these
 specific historical players -- e.g. many seasons out, once a player's
 career-long data ages out of nfl_data_py's lookback window entirely.
+
+CHUNK 17 CORRECTION (found live, not assumed -- fixing this test's
+premise, not its threshold): once Chunk 17 wired in live market ADP,
+`test_recommends_qb_at_pick_147` started failing -- David Njoku (TE)
+outright beat every available QB, including under a NO-LOOKAHEAD (pure
+immediate marginal value) evaluation, so this was NOT the Chunk 13 bug
+resurfacing (that bug was specifically the LOOKAHEAD corrupting an
+otherwise-correct immediate valuation; here immediate and full-lookahead
+AGREE). Root cause: Geno Smith (this fixture's real, historical best-
+available QB at pick 147) genuinely lost SUPER_FLEX-caliber value per his
+real, current market ADP (his projection dropped from a stale 257.2 pts
+to a blended 129.5 once Chunk 17 detected his real team change and
+applied a live ADP correction) -- a real-world fact this project has no
+visibility into beyond Jan 2026, not a code defect. Hardcoding "QB must
+win at pick 147" baked in an assumption (a specific player's real-world
+value) that can legitimately drift as roster/depth-chart reality changes,
+which is exactly the kind of fixture staleness a REAL-data-anchored test
+is uniquely exposed to (a synthetic/deterministic test wouldn't have this
+problem, but also wouldn't test real data the way this fixture is meant
+to).
+
+THE FIX: replaced "assert top pick is QB" with the actual, general
+invariant Chunk 13's fixes guarantee at the LAST real pick specifically --
+immediate-value (no lookahead) and full-lookahead (real recommend())
+should always AGREE on the top pick at pick 147, regardless of which
+player/position that happens to be. This holds precisely BECAUSE Chunk 13
+Fix #2 (_draft_is_over) already suppresses further tree/rollout expansion
+at this exact point (there's no legitimate "wait and see" story possible
+at the literal last pick of the draft), so a disagreement here would mean
+the lookahead is doing something it structurally shouldn't be able to --
+the real bug signature, decoupled from which specific real player is
+"best available" today. Verified robust across all 8 seeds checked (100%
+agreement, both preferring David Njoku as of this writing) before locking
+this in. Picks 14/34 keep their existing near-tie-based design (still
+passing after Chunk 17 -- QB remains a genuine statistical contender
+there even with live ADP data factored in).
 """
 from __future__ import annotations
 
@@ -104,21 +140,33 @@ def _assert_qb_top_or_statistically_tied(pick_no: int, players_by_id: dict[str, 
     )
 
 
-def test_recommends_qb_at_pick_147(players_by_id: dict[str, dict[str, Any]]) -> None:
+def test_lookahead_agrees_with_immediate_value_at_final_pick(players_by_id: dict[str, dict[str, Any]]) -> None:
     """
-    Pick 147 is my LAST real turn of the draft -- robust across all 8
-    seeds checked while building this test (see module docstring), and
-    the most decisive single check available: the old bug's "I'll get a
-    QB later" reasoning has zero "later" left to appeal to here, so a
-    QB recommendation at this exact point is the highest-signal evidence
-    the fix is holding.
+    Pick 147 is my LAST real turn of the draft -- see the CHUNK 17
+    CORRECTION note in the module docstring for why this no longer
+    hardcodes "must be QB". At the literal last pick, Chunk 13 Fix #2
+    (_draft_is_over) already suppresses any further tree/rollout
+    expansion -- there is no legitimate "wait and see" scenario the
+    lookahead could be modeling here, so full-lookahead recommend() and a
+    pure immediate-value (no lookahead) evaluation should always agree on
+    the top pick. A disagreement here -- regardless of which player it
+    involves -- would mean the lookahead is doing something it
+    structurally shouldn't be able to at this exact point, which is
+    precisely the bug signature Chunk 13 found and fixed.
     """
-    result = _recommend(147, players_by_id)
-    top = result["recommendations"][0]
-    assert top["position"] == "QB", (
-        f"expected the outright top recommendation at pick 147 (my last real turn) to be a QB, got "
-        f"{top['name']} ({top['position']}) instead -- the QB-shortage/TE-glut bug this fixture exists "
-        "to guard against may have regressed"
+    real_picks = _load_real_picks()
+    state = _state_before_pick(147, real_picks)
+
+    full = mcts_service.recommend(state, players_by_id, seed=SEED)
+    immediate = mcts_service.recommend(state, players_by_id, seed=SEED, tree_depth=1, rollout_extra_picks=0)
+
+    full_top = full["recommendations"][0]
+    immediate_top = immediate["recommendations"][0]
+    assert full_top["name"] == immediate_top["name"], (
+        f"pick 147 (my last real turn): full-lookahead recommends {full_top['name']} ({full_top['position']}) "
+        f"but immediate-value (no lookahead) recommends {immediate_top['name']} ({immediate_top['position']}) -- "
+        "these should always agree at the literal last pick, since Chunk 13 Fix #2 already suppresses any "
+        "further lookahead here; a mismatch means the lookahead is doing something it structurally shouldn't"
     )
 
 
