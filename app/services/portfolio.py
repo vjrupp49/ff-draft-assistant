@@ -168,7 +168,7 @@ from typing import Any, Optional
 import numpy as np
 
 from app.services.simulation import DEFAULT_NUM_SIMS, simulate_players
-from app.services.vbd import allocate_roster_starters
+from app.services.vbd import allocate_roster_starters, allocate_roster_starters_with_flex_ranks
 
 # BASE: fraction of a BENCH player's simulated points that count toward
 # roster value for that position's SINGLE most valuable bench player
@@ -190,6 +190,99 @@ BENCH_DISCOUNT_DECAY: dict[str, float] = {
 }
 DEFAULT_BENCH_DISCOUNT_BASE = 0.25  # fallback base for any position missing from the dict above
 DEFAULT_BENCH_DISCOUNT_DECAY = 1.0  # fallback decay (flat, no rank-based reduction)
+
+# CHUNK 20 FIX -- FLEX-SLOT CONCENTRATION DISCOUNT: found via a real live
+# draft (Chunk 19) that this project's own recommendations produced a
+# QB=1/TE=8 final roster -- worse than the original Chunk 12/13 bug, via a
+# genuinely different mechanism. Root-caused, not assumed (see Chunk 20's
+# report for the full trace): every individual TE pick was a real,
+# defensible near-tie at the time -- the pre-fix Chunk 13 bug (blind
+# context-free rollout confidently, wrongly dismissing a clearly-better
+# QB) was NOT reproducing. Confirmed directly instead: nothing penalized
+# a STARTER-classified player for sharing the SAME small FLEX+SUPER_FLEX
+# pool with same-position teammates -- a roster with 4 TEs each
+# individually "starting" via that shared pool was valued identically to
+# one with 4 different positions each holding one slot, even though the
+# former is a far less diversified, riskier construction (in a real
+# season, at most 1-2 of those 4 TEs can start in any given week; the
+# other 2-3 are functionally bench that week despite being nominally
+# "starters" here). This is DIFFERENT from the CHUNK 10 FIX above (that's
+# about BENCH players, players who mathematically CAN'T start at all);
+# this is about STARTER-classified players competing for the same pool.
+#
+# Confirmed via direct A/B (Chunk 20 Task 3, replaying Chunk 19's real
+# pick 71): the best available QB's own one-step marginal value (301.65)
+# clearly beat the eventually-picked TE's (247.73) by 54 points -- a
+# decisive gap, not a real near-tie -- yet the full MCTS lookahead
+# (mcts.py) washed this into a near-exact statistical tie (2606.7 vs
+# 2606.1), because its own roster-aware rollout continuation
+# (_roster_aware_pick) shares this SAME blind spot and kept assuming
+# "I'll fix the QB situation on a later simulated pick" -- an assumption
+# that, in the REAL draft that actually unfolded, never once came true.
+#
+# NOT applied to compute_replacement_levels' league-wide math (vbd.py) --
+# Chunk 20 Task 1 found that calculation is working as designed (this
+# league's real TE-premium scoring legitimately lets top TEs earn a
+# larger-than-naive share of league-wide FLEX demand; QB's own
+# SUPER_FLEX-driven ~20-startable-QBs scarcity is ALSO already correctly
+# reflected there). This is specifically a ROSTER-level portfolio-
+# construction gap, priced here, not a projection or league-wide-scarcity
+# error.
+#
+# CALIBRATION (a documented judgment call, not fit to data -- same
+# project convention as BENCH_DISCOUNT_BASE/DECAY above): the FIRST
+# same-position player seated via the shared FLEX+SUPER_FLEX pool gets NO
+# discount (1.0) -- that's completely normal, often optimal, roster
+# construction (e.g. one elite pass-catching TE legitimately holding a
+# flex slot). The SECOND+ same-position occupant of that SAME shared pool
+# is what this fix prices.
+#
+# POSITION-SPECIFIC, NOT ONE FLAT SCHEDULE -- found the hard way, not
+# assumed: the first version of this fix used one generic schedule
+# (0.5/0.6) for every position. Re-validating against the Chunk 9 harness
+# (Chunk 20 Task 5) surfaced a NEW regression that flat version caused --
+# WR ended up under league median (-2.0 deviation, crossing this
+# project's own >1 threshold) that hadn't existed before. Root cause:
+# Tasks 1-3's entire investigation found and confirmed a TE-SPECIFIC
+# problem (TE-premium scoring inflating raw points enough to win the
+# shared pool repeatedly) -- applying the same aggressive discount to
+# every position was untested overreach beyond what the evidence actually
+# supported, the exact mistake Chunk 10's own precedent warns against
+# ("only touch a constant when a real failure or a directly-confirmed
+# risk motivates it" -- that chunk left WR/TE bench discount flat for
+# lack of evidence; this fix now follows that same discipline). QB is
+# structurally exempt regardless of its entry here: this league's
+# SUPER_FLEX count is 1, so `_allocate_starters`'s own qb_seated cap
+# means a QB's flex_rank can never exceed 1 in the first place -- a 2nd+
+# QB simply can't enter the shared pool at all, so no QB entry is even
+# needed. RB defaults to no discount (1.0) for the same reason as WR: no
+# Task 1-3 evidence of an RB-specific version of this problem, so no
+# speculative change -- revisit if a future chunk finds real evidence.
+FLEX_CONCENTRATION_DISCOUNT_BASE: dict[str, float] = {
+    "TE": 0.5,
+}
+FLEX_CONCENTRATION_DISCOUNT_DECAY: dict[str, float] = {
+    "TE": 0.6,
+}
+DEFAULT_FLEX_CONCENTRATION_DISCOUNT_BASE = 1.0  # no discount for positions not listed above -- no evidence of a problem there
+DEFAULT_FLEX_CONCENTRATION_DISCOUNT_DECAY = 1.0
+
+
+def flex_concentration_discount_for(position: Optional[str], flex_rank: int) -> float:
+    """
+    The discount for a STARTER seated via the shared FLEX+SUPER_FLEX pool
+    (see vbd.py's `allocate_roster_starters_with_flex_ranks`), holding
+    `flex_rank` (1-indexed, 1 = best) among same-position teammates ALSO
+    seated via that same shared pool. rank=1 -> 1.0 (no discount) for
+    every position. rank=2+ only actually discounts positions listed in
+    FLEX_CONCENTRATION_DISCOUNT_BASE (currently just TE -- see that
+    dict's docstring for why the others default to no discount).
+    """
+    if flex_rank <= 1:
+        return 1.0
+    base = FLEX_CONCENTRATION_DISCOUNT_BASE.get(position, DEFAULT_FLEX_CONCENTRATION_DISCOUNT_BASE)
+    decay = FLEX_CONCENTRATION_DISCOUNT_DECAY.get(position, DEFAULT_FLEX_CONCENTRATION_DISCOUNT_DECAY)
+    return base * (decay ** (flex_rank - 2))
 
 
 def compute_bench_ranks(
@@ -310,7 +403,7 @@ def evaluate_roster(
 
     base_by_position = bench_discount_base or BENCH_DISCOUNT_BASE
     decay_by_position = bench_discount_decay or BENCH_DISCOUNT_DECAY
-    starter_ids = allocate_roster_starters(roster_players)
+    starter_ids, flex_ranks = allocate_roster_starters_with_flex_ranks(roster_players)
 
     per_player_totals = simulate_players(roster_players, num_sims=num_sims, seed=seed)
     player_ids = [p["player_id"] for p in roster_players]
@@ -322,13 +415,16 @@ def evaluate_roster(
     # random variable by a constant c scales its variance by c^2 and its
     # covariance with everyone else by c, so this discounts a bench
     # player's contribution to BOTH the roster's expected value AND its
-    # risk consistently, not just the final point estimate.
+    # risk consistently, not just the final point estimate. CHUNK 20 FIX:
+    # a starter seated via the shared FLEX+SUPER_FLEX pool (not a
+    # dedicated slot) gets the SAME treatment if a same-position teammate
+    # also shares that pool -- see FLEX_CONCENTRATION_DISCOUNT_BASE above.
     contributed_totals: dict[str, np.ndarray] = {}
     player_discounts: dict[str, float] = {}
     for p in roster_players:
         pid = p["player_id"]
         if pid in starter_ids:
-            discount = 1.0
+            discount = flex_concentration_discount_for(p.get("position"), flex_ranks[pid]) if pid in flex_ranks else 1.0
         else:
             discount = bench_discount_for(p.get("position"), bench_ranks[pid], base_by_position, decay_by_position)
         player_discounts[pid] = discount
@@ -376,6 +472,10 @@ def evaluate_roster(
                 "is_starter": pid in starter_ids,
                 "bench_rank": bench_ranks.get(pid),
                 "bench_discount_applied": None if pid in starter_ids else round(player_discounts[pid], 4),
+                "flex_position_rank": flex_ranks.get(pid),
+                "flex_concentration_discount_applied": (
+                    round(player_discounts[pid], 4) if pid in flex_ranks and flex_ranks[pid] > 1 else None
+                ),
                 "raw_mean": round(float(raw_means[i]), 1),
                 "contributed_mean": round(float(means[i]), 1),
                 "contributed_variance": round(float(cov[i, i]), 1),

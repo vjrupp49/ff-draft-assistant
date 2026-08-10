@@ -104,9 +104,10 @@ from app.services.portfolio import (
     DEFAULT_RISK_AVERSION,
     bench_discount_for,
     compute_bench_ranks,
+    flex_concentration_discount_for,
 )
 from app.services.simulation import DEFAULT_NUM_SIMS, simulate_players
-from app.services.vbd import allocate_roster_starters
+from app.services.vbd import allocate_roster_starters_with_flex_ranks
 
 NUM_PERMUTATIONS = 200
 
@@ -134,17 +135,20 @@ def _weighted_value(
     bench ranks (Chunk 10 -- a player's rank among same-position bench
     players is also a property of the subset, same reasoning as
     starter/bench itself), then sums each player's simulated draws at full
-    value (starter) or rank-decayed discounted value (bench) before
-    computing mean/variance, exactly mirroring portfolio.evaluate_roster's
-    math.
+    value (starter, unless it's sharing the FLEX+SUPER_FLEX pool with a
+    same-position teammate within THIS subset -- Chunk 20, same re-derive-
+    per-subset reasoning as bench rank) or rank-decayed discounted value
+    (bench) before computing mean/variance, exactly mirroring
+    portfolio.evaluate_roster's math.
     """
-    starter_ids = allocate_roster_starters(prefix_players)
+    starter_ids, flex_ranks = allocate_roster_starters_with_flex_ranks(prefix_players)
     bench_ranks = compute_bench_ranks(prefix_players, starter_ids, per_player_totals)
     weighted_sum = np.zeros(num_sims)
     for p in prefix_players:
         pid = p["player_id"]
         if pid in starter_ids:
-            weighted_sum += per_player_totals[pid]
+            discount = flex_concentration_discount_for(p.get("position"), flex_ranks[pid]) if pid in flex_ranks else 1.0
+            weighted_sum += per_player_totals[pid] * discount
         else:
             discount = bench_discount_for(p.get("position"), bench_ranks[pid], base_by_position, decay_by_position)
             weighted_sum += per_player_totals[pid] * discount

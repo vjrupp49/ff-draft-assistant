@@ -63,6 +63,20 @@ than reimplementing a second copy of it -- is exactly what
 `_allocate_starters` being factored out as a shared core (parameterized by
 how many slots to fill, not hardcoded to league-wide demand) makes
 possible.
+
+CHUNK 20 ADDITION -- `allocate_roster_starters_with_flex_ranks`: a real
+live draft (Chunk 19) found that being classified "starter" via the
+shared FLEX+SUPER_FLEX pool carries ZERO signal about how many
+SAME-POSITION teammates are ALSO sharing that same small pool of slots --
+a roster with 4 TEs each individually "starting" in that pool is treated
+identically to one with 4 different positions each holding one slot, even
+though the former is a much less diversified, riskier construction.
+Confirmed this is NOT a league-wide replacement-level problem (Task 1 of
+that chunk's investigation found QB/TE replacement levels correctly
+reflect this league's real SUPER_FLEX/TE-premium scoring, not an error)
+-- it's specifically a ROSTER-level gap, so this addition only affects
+`allocate_roster_starters`'s callers (portfolio.py/shapley.py/mcts.py),
+never `compute_replacement_levels`'s league-wide math above.
 """
 
 from __future__ import annotations
@@ -86,7 +100,7 @@ def _slot_counts() -> dict[str, int]:
 def _allocate_starters(
     by_position: dict[str, list[dict[str, Any]]],
     slot_needs: dict[str, int],
-) -> set[str]:
+) -> tuple[set[str], dict[str, int]]:
     """
     Shared starter-allocation core (see module docstring). `by_position`
     must already be grouped by position and sorted DESCENDING by
@@ -101,7 +115,18 @@ def _allocate_starters(
     pass, not two) is identical either way; only the slot quantities
     differ.
 
-    Returns the set of player_ids that would occupy a starting slot.
+    Returns (started_ids, flex_rank_by_id):
+      - started_ids: the set of player_ids that would occupy a starting slot.
+      - flex_rank_by_id: for players SPECIFICALLY seated via the shared
+        FLEX+SUPER_FLEX pool (step 2 below) -- NOT the dedicated-slot
+        starters from step 1, who never compete with a same-position
+        teammate for their slot -- their 1-indexed rank (1 = best) among
+        OTHER SAME-POSITION players also seated via that same shared pool.
+        Added in Chunk 20 for the FLEX_CONCENTRATION_DISCOUNT this
+        function's callers use (see portfolio.py) -- see this module's
+        docstring for why this is tracked separately from the dedicated
+        slots, which have no analogous concentration risk (there's only
+        ever one player total per dedicated slot, structurally).
     """
     started_ids: set[str] = set()
 
@@ -127,6 +152,8 @@ def _allocate_starters(
 
     qb_seated = 0
     flex_started: set[str] = set()
+    flex_rank_by_id: dict[str, int] = {}
+    flex_position_counts: dict[str, int] = {}
     for p in combined_pool:
         if len(flex_started) >= total_flexible_slots:
             break
@@ -135,9 +162,11 @@ def _allocate_starters(
                 continue  # no SUPER_FLEX slot left that could hold another QB
             qb_seated += 1
         flex_started.add(p["player_id"])
+        flex_position_counts[p["position"]] = flex_position_counts.get(p["position"], 0) + 1
+        flex_rank_by_id[p["player_id"]] = flex_position_counts[p["position"]]
 
     started_ids.update(flex_started)
-    return started_ids
+    return started_ids, flex_rank_by_id
 
 
 def _league_slot_needs(slot_counts: dict[str, int]) -> dict[str, int]:
@@ -175,7 +204,7 @@ def compute_replacement_levels(
     for pos in by_position:
         by_position[pos].sort(key=lambda p: p["projected_points"], reverse=True)
 
-    started_ids = _allocate_starters(by_position, _league_slot_needs(slot_counts))
+    started_ids, _flex_ranks = _allocate_starters(by_position, _league_slot_needs(slot_counts))
 
     remaining = {
         pos: [p for p in players if p["player_id"] not in started_ids]
@@ -213,6 +242,25 @@ def allocate_roster_starters(roster_players: Iterable[dict[str, Any]]) -> set[st
     (a mid-draft partial roster, or a thin bench), everyone eligible ends
     up started -- there's nobody left to be bench yet, which is the
     correct behavior for a roster still being built.
+    """
+    started_ids, _flex_ranks = allocate_roster_starters_with_flex_ranks(roster_players)
+    return started_ids
+
+
+def allocate_roster_starters_with_flex_ranks(
+    roster_players: Iterable[dict[str, Any]],
+) -> tuple[set[str], dict[str, int]]:
+    """
+    Chunk 20: same allocation as `allocate_roster_starters`, but ALSO
+    returns flex_rank_by_id -- see `_allocate_starters`'s docstring for
+    exactly what this tracks (a starter's rank among same-position
+    teammates ALSO sharing the FLEX+SUPER_FLEX pool, used by
+    portfolio.py's FLEX_CONCENTRATION_DISCOUNT). A separate function from
+    `allocate_roster_starters` so that function's existing simple
+    set-only API (used throughout the codebase since Chunk 6) never
+    changes -- only callers that actually need the new detail
+    (portfolio.py, shapley.py, mcts.py's roster-aware rollout policy)
+    call this one instead.
     """
     slot_counts = _slot_counts()
     roster_slot_needs = {pos: slot_counts.get(pos, 0) for pos in FANTASY_POSITIONS}

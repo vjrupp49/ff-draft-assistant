@@ -127,8 +127,15 @@ from app.config import NUM_DRAFT_ROUNDS
 from app.services._stats import WelfordAccumulator
 from app.services.draft_state import DraftState
 from app.services.opponent_model import build_adp_proxy_ranks, sample_pick
-from app.services.portfolio import BENCH_DISCOUNT_BASE, BENCH_DISCOUNT_DECAY, DEFAULT_RISK_AVERSION, bench_discount_for, evaluate_roster
-from app.services.vbd import allocate_roster_starters, calculate_vbd
+from app.services.portfolio import (
+    BENCH_DISCOUNT_BASE,
+    BENCH_DISCOUNT_DECAY,
+    DEFAULT_RISK_AVERSION,
+    bench_discount_for,
+    evaluate_roster,
+    flex_concentration_discount_for,
+)
+from app.services.vbd import allocate_roster_starters_with_flex_ranks, calculate_vbd
 
 logger = logging.getLogger("ff_draft_assistant.mcts")
 
@@ -308,18 +315,35 @@ def _roster_aware_marginal_value(candidate: dict[str, Any], roster_with_candidat
     """
     Cheap (no Monte Carlo -- see CHUNK 13 FIX above) proxy for how much
     `candidate` actually contributes to a roster that already includes it:
-    full projected_points if `vbd.allocate_roster_starters` says this
-    roster would start them, else their position's rank-decayed
-    BENCH_DISCOUNT (portfolio.py, unchanged) applied to projected_points,
-    with bench rank approximated by projected_points among same-position
-    bench-mates (portfolio.py's real `compute_bench_ranks` uses simulated
-    mean instead -- not used here since this runs many times per MCTS
-    iteration and must stay fast; the one real simulated evaluation still
-    happens once per iteration, in `evaluate_roster` at the end).
+    full projected_points if `vbd.allocate_roster_starters_with_flex_ranks`
+    says this roster would start them via a DEDICATED slot, a CHUNK 20
+    FLEX_CONCENTRATION_DISCOUNT-scaled value if they'd start via the
+    shared FLEX+SUPER_FLEX pool alongside a same-position teammate, else
+    their position's rank-decayed BENCH_DISCOUNT (portfolio.py,
+    unchanged) applied to projected_points, with bench rank approximated
+    by projected_points among same-position bench-mates (portfolio.py's
+    real `compute_bench_ranks` uses simulated mean instead -- not used
+    here since this runs many times per MCTS iteration and must stay
+    fast; the one real simulated evaluation still happens once per
+    iteration, in `evaluate_roster` at the end).
+
+    CHUNK 20 FIX: this used to return FULL, undiscounted value for ANY
+    starter-classified candidate, with no signal at all about how many
+    same-position teammates already share the SAME small FLEX+SUPER_FLEX
+    pool -- confirmed (Chunk 20 Task 3, replaying a real live draft) this
+    is exactly why the rollout's own simulated continuation kept assuming
+    "I'll fix my QB situation on a later pick" even when taking yet
+    another TE right now, an assumption that never actually came true in
+    the real draft that exposed this. Without this fix, this function was
+    the SAME blind spot Chunk 13 fixed for the OLD context-free-VBD
+    rollout policy, just reintroduced one layer deeper in the NEW
+    roster-aware one.
     """
-    starter_ids = allocate_roster_starters(roster_with_candidate)
+    starter_ids, flex_ranks = allocate_roster_starters_with_flex_ranks(roster_with_candidate)
     pid = candidate["player_id"]
     if pid in starter_ids:
+        if pid in flex_ranks:
+            return candidate["projected_points"] * flex_concentration_discount_for(candidate.get("position"), flex_ranks[pid])
         return candidate["projected_points"]
     bench_same_position = sorted(
         (p for p in roster_with_candidate if p.get("position") == candidate.get("position") and p["player_id"] not in starter_ids),
