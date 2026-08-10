@@ -410,10 +410,29 @@ def _run_iteration(
         _advance_opponents(rollout_state, players_by_id, adp_ranks, rng)
 
     # EVALUATE: risk-adjusted value of my accumulated roster (portfolio.py).
+    # CHUNK 15 FIX: this used to call evaluate_roster(..., seed=None) --
+    # found while building this chunk's regression suite that recommend()
+    # was not actually reproducible even when given an explicit `seed`,
+    # because this reward draw (the single most decision-relevant
+    # randomness in the whole search) was pulling from numpy's unseeded
+    # global entropy every iteration regardless of what seed the caller
+    # passed. Confirmed directly: calling recommend() 5x on an IDENTICAL
+    # state with seed=1 produced 5 different scores and, once, a flipped
+    # #1 recommendation (QB vs. RB) -- not the ordinary near-tie noise
+    # documented in the STABILITY NOTE above (that's inherent to MCTS
+    # sampling itself), but a stronger bug where "the same seed" never
+    # meant "the same run." Deriving a per-iteration seed from `rng` (the
+    # SAME generator _advance_opponents already uses) fixes this: each of
+    # the `iterations` reward draws is still its own independent-ish
+    # Monte Carlo sample within one recommend() call (that variety is the
+    # point of the search), but the WHOLE sequence is now reproducible
+    # run-to-run for a given outer seed, the way every other seed=
+    # parameter in this codebase already behaves.
+    reward_seed = int(rng.integers(0, 2**31 - 1))
     my_roster_ids = rollout_state.roster_player_ids()
     my_roster_players = [players_by_id[pid] for pid in my_roster_ids if pid in players_by_id]
     reward = evaluate_roster(
-        my_roster_players, risk_aversion=risk_aversion, num_sims=rollout_sim_count, seed=None
+        my_roster_players, risk_aversion=risk_aversion, num_sims=rollout_sim_count, seed=reward_seed
     )["risk_adjusted_score"]
 
     # BACKPROPAGATION

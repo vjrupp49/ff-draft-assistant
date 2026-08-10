@@ -67,6 +67,41 @@ Then visit:
 - `ws://127.0.0.1:8000/ws/draft` — live draft-pick feed (polls Sleeper every
   3 seconds, pushes new picks as JSON)
 
+## Testing
+
+```bash
+pytest tests/
+```
+
+The project's first automated test suite (added Chunk 15), covering the
+draft-recommendation engine's most failure-prone corner: `mcts.py`'s
+rollout/tree search. Converts several chunks' worth of manual harness
+runs into permanent regression checks so this failure class can't
+silently reappear:
+
+- `test_positional_balance.py` — multi-seed mock-draft sweep asserting no
+  position drifts more than 1 count from the league-wide median (the
+  same threshold used to catch the original Chunk 9 QB glut). Also
+  checks draft-slot sensitivity. **Limitation, documented in the file
+  itself**: this aggregate check has real but limited sensitivity to the
+  specific historical bug below — treat it as a general sanity check, not
+  the primary guard.
+- `test_chunk12_regression.py` — replays the actual real Sleeper draft
+  that originally surfaced a QB-shortage/TE-glut bug (Chunk 12/13) and
+  asserts the engine now handles it correctly. This is the reliable,
+  deterministic guard against that specific regression.
+- `test_draft_end_boundary.py` — asserts MCTS's lookahead never invents
+  fictional rounds past the real 15-round draft (includes a
+  negative-control test, off by default, proving the guard isn't
+  vacuous — see the file for how to run it).
+- `test_runtime_budget.py` — a generous tripwire (not a performance
+  target) against a catastrophic future slowdown.
+
+**Run this before trusting any change to `mcts.py`, `portfolio.py`,
+`shapley.py`, or `opponent_model.py`** — the project's history (Chunks 9,
+12, 13, 15) shows these are exactly the files prone to this class of bug.
+Full suite runtime is ~3-4 minutes.
+
 ## Project structure
 
 ```
