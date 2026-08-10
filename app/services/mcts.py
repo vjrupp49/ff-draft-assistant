@@ -20,7 +20,8 @@ not thousands) beyond the tree horizon. Concretely:
   - TREE_DEPTH (default 2): how many of my own future picks get real
     UCB1-guided tree search (this pick + 1 more). Beyond that,
     ROLLOUT_EXTRA_PICKS (default 1) more of my picks are filled with a
-    cheap greedy policy (best available VBD) instead of further branching
+    cheap greedy-by-marginal-roster-value policy (see CHUNK 13 FIX below --
+    was pure best-available-VBD until that fix) instead of further branching
     -- a 3rd-pick-out tree level would multiply node count by another
     CANDIDATE_BREADTH for a decision that's dominated by "who's even still
     there," which the opponent model already accounts for stochastically.
@@ -60,6 +61,58 @@ via opponent_model.py) is likely to strip out the alternative position
 entirely before my next turn, leaving my downstream picks worse off. That
 scarcity effect is exactly what plain VBD cannot see on its own, and was
 the point of Chunk 4; risk-awareness on top of it is the point of Chunk 5.
+
+CHUNK 13 FIX -- ROSTER-AWARE ROLLOUT CONTINUATION (root cause of a real
+QB shortage AND TE glut found via a live-Sleeper draft replay, confirmed
+directly rather than assumed): the ROLLOUT_EXTRA_PICKS greedy continuation
+below used to call `_top_available_by_vbd` -- context-free, league-wide
+VBD, with NO awareness of what the rollout's own simulated roster already
+holds. Confirmed by direct A/B replay of the real draft: forcing a
+one-step-only evaluation (tree_depth=1, rollout_extra_picks=0, i.e. no
+lookahead beyond the immediate candidate) had a 2nd/3rd QB winning
+CLEANLY at every one of 7 real decision points where the live engine had
+instead recommended a 4th/5th TE -- proving portfolio.py's starter/bench
+allocation and BENCH_DISCOUNT machinery (Chunk 7/10) were never the bug;
+they correctly recognize a 2nd QB as SUPER_FLEX-starter value, INCLUDING
+its opportunity cost of displacing whichever player currently occupies
+that slot. The bug was entirely in this rollout's candidate policy: since
+context-free VBD keeps ranking the best-available QB and elite
+(TE-premium-boosted) TEs highly at literally every state, a blind greedy
+rollout continuation could always "find" a QB or another elite TE 1-2
+picks later regardless of which candidate the ROOT of that same iteration
+was evaluating -- so taking a TE now vs. a QB now looked artificially
+indifferent to MCTS's reward, because its own simulated future self
+always assumed it could shore up the SUPER_FLEX slot "later." That excuse
+recurred identically at EVERY subsequent turn (a self-perpetuating
+procrastination artifact, not a one-off), which is why the QB was never
+actually recommended until there was no "later" left -- and every TE
+taken in its place is simultaneously one more glut unit at TE, since both
+positions compete for the exact same FLEX/SUPER_FLEX capacity. This is
+why the QB shortage and TE glut turned out to share ONE root cause, not
+two independent ones each needing its own position-tuned constant.
+
+FIX: `_roster_aware_pick` (below) replaces the blind top-1-VBD rollout
+continuation with a cheap (no Monte Carlo -- this runs many times per
+iteration, so it must stay fast) proxy for MARGINAL value: among the same
+top-`candidate_breadth` VBD candidates, pick whichever would contribute
+the most to THIS rollout's own accumulating roster right now -- full
+value if `vbd.allocate_roster_starters` says it would start, else its
+position's rank-decayed BENCH_DISCOUNT (portfolio.py, Chunk 10) applied
+to projected_points (bench rank approximated by projected_points, not a
+full simulated mean, for the same speed reason). This does NOT touch
+portfolio.py, shapley.py, or any BENCH_DISCOUNT constant -- none of them
+were broken; only this rollout's candidate-selection policy was.
+
+CHUNK 13 FIX #2 -- BOUNDED LOOKAHEAD AT DRAFT'S END: a separate, smaller,
+confirmed bug compounding the above for my LAST 1-2 real turns only:
+DraftState has no concept of the draft actually ending at NUM_TEAMS *
+NUM_DRAFT_ROUNDS total picks (`slot_on_the_clock`/`picks_until_next_turn`
+extend the snake pattern infinitely) -- so for a state near my last real
+turn, `_advance_opponents` plus the tree/rollout continuation could
+simulate entirely FICTIONAL rounds beyond round 15 and evaluate a >15-man
+roster that could never exist. `_advance_opponents` and the rollout loop
+below now stop once the real total picks would be exceeded, rather than
+inventing a round 16+.
 """
 
 from __future__ import annotations
@@ -70,11 +123,12 @@ from typing import Any, Optional
 
 import numpy as np
 
+from app.config import NUM_DRAFT_ROUNDS
 from app.services._stats import WelfordAccumulator
 from app.services.draft_state import DraftState
 from app.services.opponent_model import build_adp_proxy_ranks, sample_pick
-from app.services.portfolio import DEFAULT_RISK_AVERSION, evaluate_roster
-from app.services.vbd import calculate_vbd
+from app.services.portfolio import BENCH_DISCOUNT_BASE, BENCH_DISCOUNT_DECAY, DEFAULT_RISK_AVERSION, bench_discount_for, evaluate_roster
+from app.services.vbd import allocate_roster_starters, calculate_vbd
 
 logger = logging.getLogger("ff_draft_assistant.mcts")
 
@@ -213,6 +267,18 @@ def _top_available_by_vbd(state: DraftState, players_by_id: dict[str, dict[str, 
     return ranked[:k]
 
 
+def _draft_is_over(state: DraftState) -> bool:
+    """
+    True once `state` has reached (or would exceed) the real total pick
+    count -- see CHUNK 13 FIX #2 above. DraftState itself has no concept
+    of the draft ending (its snake-order math extends infinitely), so
+    callers that simulate FORWARD from a real state (opponent advancement,
+    rollout continuation) must check this themselves rather than treating
+    "not my turn yet" as always eventually resolving to a real future pick.
+    """
+    return state.current_pick_no > state.num_teams * NUM_DRAFT_ROUNDS
+
+
 def _advance_opponents(
     state: DraftState,
     players_by_id: dict[str, dict[str, Any]],
@@ -222,6 +288,8 @@ def _advance_opponents(
     """Mutates `state` in place, sampling opponent picks (opponent_model.py) until it's my turn again."""
     guard = 0
     while not state.is_my_turn:
+        if _draft_is_over(state):
+            break  # no more picks exist, real or hypothetical -- see CHUNK 13 FIX #2
         guard += 1
         if guard > state.num_teams * 3:  # safety valve, shouldn't trigger
             logger.warning("Opponent advance loop did not converge, stopping early")
@@ -234,6 +302,52 @@ def _advance_opponents(
         if pick is None:
             break
         state.add_pick(pick)
+
+
+def _roster_aware_marginal_value(candidate: dict[str, Any], roster_with_candidate: list[dict[str, Any]]) -> float:
+    """
+    Cheap (no Monte Carlo -- see CHUNK 13 FIX above) proxy for how much
+    `candidate` actually contributes to a roster that already includes it:
+    full projected_points if `vbd.allocate_roster_starters` says this
+    roster would start them, else their position's rank-decayed
+    BENCH_DISCOUNT (portfolio.py, unchanged) applied to projected_points,
+    with bench rank approximated by projected_points among same-position
+    bench-mates (portfolio.py's real `compute_bench_ranks` uses simulated
+    mean instead -- not used here since this runs many times per MCTS
+    iteration and must stay fast; the one real simulated evaluation still
+    happens once per iteration, in `evaluate_roster` at the end).
+    """
+    starter_ids = allocate_roster_starters(roster_with_candidate)
+    pid = candidate["player_id"]
+    if pid in starter_ids:
+        return candidate["projected_points"]
+    bench_same_position = sorted(
+        (p for p in roster_with_candidate if p.get("position") == candidate.get("position") and p["player_id"] not in starter_ids),
+        key=lambda p: -p["projected_points"],
+    )
+    rank = next(i for i, p in enumerate(bench_same_position, start=1) if p["player_id"] == pid)
+    discount = bench_discount_for(candidate.get("position"), rank, BENCH_DISCOUNT_BASE, BENCH_DISCOUNT_DECAY)
+    return candidate["projected_points"] * discount
+
+
+def _roster_aware_pick(
+    state: DraftState, players_by_id: dict[str, dict[str, Any]], candidate_breadth: int
+) -> Optional[dict[str, Any]]:
+    """
+    Rollout continuation policy (see CHUNK 13 FIX above for why this
+    replaced a blind top-1-VBD pick): among the top `candidate_breadth`
+    available players by context-free VBD, returns whichever would
+    contribute the most MARGINAL value to MY roster right now -- starter
+    value if it would start, rank-decayed bench value otherwise -- instead
+    of just the highest league-wide-scarcity player regardless of whether
+    my own roster actually still needs it.
+    """
+    candidates = _top_available_by_vbd(state, players_by_id, candidate_breadth)
+    if not candidates:
+        return None
+    my_roster_ids = state.roster_player_ids()
+    my_roster = [players_by_id[pid] for pid in my_roster_ids if pid in players_by_id]
+    return max(candidates, key=lambda c: _roster_aware_marginal_value(c, my_roster + [c]))
 
 
 def _run_iteration(
@@ -263,9 +377,14 @@ def _run_iteration(
         _advance_opponents(child_state, players_by_id, adp_ranks, rng)
 
         child_depth = node.depth + 1
+        # CHUNK 13 FIX #2: don't offer further tree expansion into a
+        # fictional round beyond the real draft (see module docstring) --
+        # if _advance_opponents stopped early because the draft is over,
+        # child_state.is_my_turn is meaningless and there's nothing real
+        # left to branch on.
         untried_for_child = (
             [p["player_id"] for p in _top_available_by_vbd(child_state, players_by_id, candidate_breadth)]
-            if child_depth < tree_depth
+            if child_depth < tree_depth and not _draft_is_over(child_state)
             else []
         )
         child = _Node(child_state, child_depth, action, node, untried_for_child)
@@ -273,18 +392,21 @@ def _run_iteration(
         path.append(child)
         node = child
 
-    # ROLLOUT: beyond the tree horizon, continue with a cheap greedy policy
-    # (best available VBD) for `rollout_extra_picks` more of my picks,
+    # ROLLOUT: beyond the tree horizon, continue with a roster-aware greedy
+    # policy (CHUNK 13 FIX -- see module docstring; this used to be blind
+    # top-1-VBD, which was the confirmed root cause of a real QB
+    # shortage/TE glut) for `rollout_extra_picks` more of my picks,
     # advancing opponents between each -- on a clone so this randomness
-    # doesn't get baked into the tree itself.
+    # doesn't get baked into the tree itself. Stops early if the draft
+    # would actually be over by then (CHUNK 13 FIX #2).
     rollout_state = node.draft_state.clone()
     for _ in range(rollout_extra_picks):
-        if not rollout_state.is_my_turn:
+        if not rollout_state.is_my_turn or _draft_is_over(rollout_state):
             break
-        candidates = _top_available_by_vbd(rollout_state, players_by_id, 1)
-        if not candidates:
+        pick = _roster_aware_pick(rollout_state, players_by_id, candidate_breadth)
+        if pick is None:
             break
-        rollout_state.add_pick(candidates[0]["player_id"])
+        rollout_state.add_pick(pick["player_id"])
         _advance_opponents(rollout_state, players_by_id, adp_ranks, rng)
 
     # EVALUATE: risk-adjusted value of my accumulated roster (portfolio.py).
