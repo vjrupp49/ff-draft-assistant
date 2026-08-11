@@ -136,6 +136,50 @@ simulate entirely FICTIONAL rounds beyond round 15 and evaluate a >15-man
 roster that could never exist. `_advance_opponents` and the rollout loop
 below now stop once the real total picks would be exceeded, rather than
 inventing a round 16+.
+
+CHUNK 24 FIX -- ADP-MARGIN TIE-BREAK AMONG STATISTICALLY-TIED CANDIDATES:
+Chunk 23's diagnostic (live-draft user complaint: reaching for real-market
+-safe players, e.g. Alvin Kamara at real ADP 150.8 taken 88.8 picks before
+his next real turn) found that reward IS purely a function of the
+assembled roster (see `evaluate_roster`'s signature -- no availability/ADP
+argument exists), confirmed directly, and that this is largely fine WITHIN
+the tree/rollout's own ~3-pick, ~20-real-pick horizon: an ADP-safe
+candidate is usually (not always -- see below) recoverable there. The
+actual, narrower gap Chunk 24 root-caused: `recommend()`'s ITERATIONS
+budget is split across up to CANDIDATE_BREADTH root candidates via UCB1,
+diluting the precision any ONE candidate's mcts_score gets -- a forced-root
+test giving each candidate the FULL iteration budget alone resolved
+several of `within_noise_of_leader`'s flagged "ties" into real, if small,
+differences (e.g. pick 79: Aaron Jones beat James Conner by z=2.22,
+Tony Pollard beat Conner by z=3.11 once each got a fair budget) --
+confirming several "ties" recommend() reports in production are a
+BUDGET-DILUTION artifact of the iteration split, not necessarily a true
+indifference a much more expensive analysis would also find. Directly
+re-running Chunk 23's methodology at 2 more real decision points (Chunk
+24 Part A) found the CLEAN mechanism Chunk 23 first observed (safe
+candidate's backfill is ~free, at-risk candidate's isn't) does NOT
+generalize uniformly -- at pick 79, a THIRD, unrelated candidate (Jordan
+Addison) dominated the rollout's own later greedy pick regardless of
+which of Conner/Jones/Pollard was taken first, so Conner's real-ADP
+safety didn't translate into a high backfill rate the way Kamara's did at
+pick 59. Despite that, the DIRECTIONAL signal held in 4 of the 5 real
+decision points tested across Chunks 23-24 (the tighter-real-ADP-margin
+alternative scored equal-or-higher mean reward than the safer one; pick
+59 was the one exception, and only by a statistically insignificant
+margin) -- enough to justify a narrowly-scoped TIE-BREAK, not a reward
+rewrite: among candidates recommend() already flags `within_noise_of_leader`
+for THIS call's actual iteration budget, prefer whichever has the
+smallest real-market-ADP margin to the user's ACTUAL next turn (a
+distinct pick_no from `state.current_pick_no` itself -- see
+`_next_turn_pick_no`, which fixes an off-by-one bug Chunk 23 found in an
+earlier diagnostic script that reused `picks_until_next_turn()` while
+already on the clock, always getting 0). Candidates with no real
+market_adp match never WIN this tie-break (no real signal to justify
+calling them "at risk" over a matched peer) -- see
+`_apply_adp_margin_tie_break`'s docstring for the full fallback
+reasoning. Does not touch reward computation, rollout depth, or the
+opponent model -- purely a re-ordering of `recommend()`'s already-computed
+output.
 """
 
 from __future__ import annotations
@@ -148,7 +192,7 @@ import numpy as np
 
 from app.config import NUM_DRAFT_ROUNDS
 from app.services._stats import WelfordAccumulator
-from app.services.draft_state import DraftState
+from app.services.draft_state import DraftState, slot_on_the_clock
 from app.services.opponent_model import build_adp_proxy_ranks, build_market_adp_ranks, sample_pick
 from app.services.portfolio import (
     BENCH_DISCOUNT_BASE,
@@ -488,6 +532,76 @@ def _run_iteration(
         n.record(reward)
 
 
+def _next_turn_pick_no(state: DraftState) -> int:
+    """
+    CHUNK 24: the pick_no of my NEXT turn AFTER the one `state` is
+    currently on the clock for. `state.picks_until_next_turn()` answers a
+    DIFFERENT question -- called while I'm already on the clock (as
+    `recommend()`'s caller always is), it returns 0 ("0 more picks before
+    I'm up", since I already am), not "when am I up again after THIS
+    pick." An earlier Chunk 23 diagnostic script reused it for this
+    purpose and got 0 every time, silently comparing every candidate's
+    real ADP against the CURRENT pick_no instead of the next one -- a real
+    bug in that analysis, caught and corrected there, fixed properly here
+    via a direct forward scan (a pure function of pick_no/num_teams, not
+    dependent on `state.picks` at all, so no hypothetical pick needs to be
+    added first).
+    """
+    pick_no = state.current_pick_no + 1
+    while slot_on_the_clock(pick_no, state.num_teams) != state.my_slot:
+        pick_no += 1
+    return pick_no
+
+
+def _apply_adp_margin_tie_break(top_results: list[dict[str, Any]], next_turn_pick_no: int) -> list[dict[str, Any]]:
+    """
+    CHUNK 24 FIX -- see module docstring's CHUNK 24 FIX section for the
+    full root-cause evidence. Reorders (does not rescore) `top_results`:
+    among candidates already flagged `within_noise_of_leader` (this call's
+    own statistical near-tie, at ITS actual iteration budget -- not a
+    claim that a much more expensive analysis would also find them tied),
+    promotes whichever has the SMALLEST real-market-ADP margin to
+    `next_turn_pick_no` (i.e., most at risk of being gone if left for
+    later) to the front. Every candidate's own mcts_score/vbd_score/etc
+    stay exactly as computed -- this never changes WHAT was found, only
+    WHICH tied candidate gets presented as the top pick.
+
+    NO-MATCH FALLBACK (an explicit design decision, not an oversight): a
+    candidate with no real `market_adp` (roughly 78% of the pool, per
+    Chunk 21's audit -- deep bench/practice-squad-tier players the real
+    ADP market has no opinion on) can NEVER win this tie-break. There is
+    no real signal to justify calling an unmatched player "more at risk"
+    than a matched peer -- treating a missing value as infinitely safe
+    (never preferred) OR infinitely urgent (always preferred) would both
+    be fabricating a signal that doesn't exist. An unmatched candidate can
+    still BE the pre-tie-break leader (nothing here demotes it below a
+    matched peer it was already ranked above) -- for a tied set with NO
+    matched candidates at all, this function changes nothing, a genuine
+    fallback to the existing VBD-driven MCTS ranking, not a silent
+    substitution.
+    """
+    if len(top_results) < 2:
+        return top_results
+    leader = top_results[0]
+    tied = [r for r in top_results if r.get("within_noise_of_leader")]
+    if len(tied) < 2:
+        return top_results  # no real tie to break
+
+    def _margin(r: dict[str, Any]) -> Optional[float]:
+        adp = r.get("market_adp")
+        return (adp - next_turn_pick_no) if adp is not None else None
+
+    matched_tied = [r for r in tied if _margin(r) is not None]
+    if not matched_tied:
+        return top_results  # no real-ADP signal for ANY tied candidate -- unchanged
+
+    preferred = min(matched_tied, key=_margin)
+    if preferred is leader:
+        return top_results  # already in front, nothing to reorder
+
+    return [preferred] + [r for r in top_results if r is not preferred]
+
+
 def recommend(
     draft_state: DraftState,
     players_by_id: dict[str, dict[str, Any]],
@@ -558,6 +672,7 @@ def recommend(
                 "team": vbd_info.get("team"),
                 "vbd_score": vbd_info.get("vbd"),
                 "projected_points": vbd_info.get("projected_points"),
+                "market_adp": vbd_info.get("market_adp"),
                 "mcts_score": round(child.mean_value, 1),
                 "mcts_score_stderr": round(child.stderr, 2) if child.stderr is not None else None,
                 "mcts_visits": child.visits,
@@ -570,7 +685,6 @@ def recommend(
     # Flag candidates statistically indistinguishable from the leader (see
     # STABILITY NOTE above ITERATIONS) instead of silently presenting
     # sampling noise as a confident single "#1 pick."
-    tied_with_leader: list[str] = []
     if top_results:
         leader = top_results[0]
         leader_se = leader["mcts_score_stderr"] or 0.0
@@ -579,11 +693,24 @@ def recommend(
             combined_se = (leader_se**2 + r_se**2) ** 0.5
             margin = leader["mcts_score"] - r["mcts_score"]
             r["within_noise_of_leader"] = r is leader or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se)
+
+        # CHUNK 24: among candidates just flagged as a statistical near-tie,
+        # prefer whichever real market ADP says is most at risk of being
+        # gone by the user's next turn -- see module docstring's CHUNK 24
+        # FIX section and _apply_adp_margin_tie_break's docstring.
+        pre_tie_break_leader_name = leader["name"]
+        top_results = _apply_adp_margin_tie_break(top_results, _next_turn_pick_no(draft_state))
+        leader = top_results[0]
+        adp_tie_break_applied = leader["name"] != pre_tie_break_leader_name
         tied_with_leader = [r["name"] for r in top_results if r["within_noise_of_leader"] and r is not leader]
+    else:
+        adp_tie_break_applied = False
+        tied_with_leader = []
 
     return {
         "recommendations": top_results,
         "top_pick_statistically_tied_with": tied_with_leader,
+        "adp_tie_break_applied": adp_tie_break_applied,
         "candidates_considered": root_candidates,
         "iterations_run": iterations,
         "params": {
