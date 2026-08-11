@@ -103,6 +103,62 @@ full simulated mean, for the same speed reason). This does NOT touch
 portfolio.py, shapley.py, or any BENCH_DISCOUNT constant -- none of them
 were broken; only this rollout's candidate-selection policy was.
 
+CHUNK 26 FIX -- ADAPTIVE RESOLUTION BEFORE THE ADP TIE-BREAK: Chunk 25's
+diagnostic found that `within_noise_of_leader` groups are frequently a
+BUDGET-DILUTION artifact, not genuine indifference: giving every one of
+Chunk 25's 6 traced tied groups a well-powered (20-seed x150-iteration)
+re-test, ALL SIX shed at least their weakest member, and 2 of 6 collapsed
+to a single, confidently-better winner. Critically, Chunk 25 Task 3 also
+found the well-powered winner does NOT reliably match what the ADP-margin
+tie-break (Chunk 24) would pick (0/2 agreement on the two cleanly-resolved
+cases) -- and surfaced a real bug: at one decision point, the tied group
+was almost entirely players with no real market_adp match, and the tie-
+break ended up promoting the SOLE matched candidate BY DEFAULT, even
+though a fair re-test showed that candidate was the single WORST option in
+the group (Jerry Jeudy, significantly behind David Njoku/Evan Engram, z=
+18.31 -- promoted only because the other two had no ADP data to compete
+with, not on merit).
+
+FIX: `_adaptively_resolve_tie` now runs FIRST, whenever `within_noise_of_leader`
+flags 2+ candidates -- a second, focused MCTS pass giving JUST that tied
+group a fresh, dedicated iteration budget (ADAPTIVE_RESOLUTION_MAX_ITERATIONS,
+in ADAPTIVE_RESOLUTION_BATCH_SIZE-sized batches, stopping early once
+resolved) instead of splitting `recommend()`'s normal ITERATIONS across up
+to CANDIDATE_BREADTH root candidates. If this narrows the group to a
+single leader (using the exact same NEAR_TIE_Z definition `within_noise_of_leader`
+already uses elsewhere -- no new/inconsistent threshold), that candidate
+is trusted DIRECTLY -- `_apply_adp_margin_tie_break` is skipped entirely,
+per Chunk 25 Task 3's finding that cross-checking a confidently-resolved
+winner against ADP margin can overturn a genuinely better pick for a
+merely safer-sounding one. The ADP tie-break only runs on whatever
+(possibly narrower) tied set remains genuinely indistinguishable after
+this pass -- which also directly fixes the Jeudy bug: Jeudy gets
+correctly shed by the adaptive pass BEFORE the ADP criterion ever sees the
+group, leaving only the two real (unmatched) contenders, for whom the
+existing no-match fallback correctly changes nothing.
+
+BUDGET CALIBRATION (Chunk 25's 6 traced picks, re-tested with increasing
+single-stream iteration budgets up to 900): the two groups that turned
+out to have a genuinely dominant winner (picks 82, 102) started separating
+within 100-600 iterations; the groups with a genuinely-tied CORE (picks
+59, 79, 39, 122) did NOT resolve even at 900 -- consistent with Chunk 25's
+finding that some of these differences are real but too small to ever
+resolve at any practical budget (e.g. pick 59's Kamara-vs-McLaurin gap
+needed an EXTRAPOLATED ~30,000 iterations to reach z=2, per its measured
+z=0.63 at 3000). ADAPTIVE_RESOLUTION_MAX_ITERATIONS=600 (4 batches of
+ADAPTIVE_RESOLUTION_BATCH_SIZE=150, the existing ITERATIONS default) is
+chosen to comfortably catch the resolvable class within its budget while
+NOT chasing the unresolvable class further -- those are meant to fall
+through to the ADP tie-break, not a shortfall of this pass. Added
+wall-clock cost is real and not hand-waved: roughly another 0.5-4s on top
+of the existing ~1.5-2s baseline call, only when a tie actually exists
+(13/15 real picks in Chunk 22's dry run had one) -- still comfortably
+inside the existing 20s RUNTIME_CEILING_SECONDS tripwire (see
+test_runtime_budget.py) and the two-tier live-recompute design's existing
+"a few seconds" tolerance for its EXPENSIVE tier (app/services/draft_live.py,
+Chunks 11-12), which is the only place `recommend()` runs at full
+iteration count during a live draft.
+
 CHUNK 21 FINDING -- "WAIT VALUE" WAS ALREADY A CONCEPT HERE, JUST FED BAD
 DATA: user feedback after a live draft (Chunk 19) described two symptoms --
 reaching for a player who'd almost certainly still be there many rounds
@@ -250,6 +306,15 @@ UCB_EXPLORATION = 1.8
 # multiple-comparison correction -- but enough to stop presenting sampling
 # noise as a confident single "#1 pick."
 NEAR_TIE_Z = 1.5
+
+# CHUNK 26 -- see module docstring's CHUNK 26 FIX / BUDGET CALIBRATION
+# sections for the full reasoning and the calibration data behind these
+# two numbers. BATCH_SIZE reuses the existing, already-tuned ITERATIONS
+# default rather than inventing a new unit; MAX_ITERATIONS (4 batches) is
+# sized to catch genuinely-resolvable budget-dilution ties without chasing
+# genuinely-tied ones past the point of diminishing returns.
+ADAPTIVE_RESOLUTION_BATCH_SIZE = 150
+ADAPTIVE_RESOLUTION_MAX_ITERATIONS = 600
 
 
 class _RewardStats:
@@ -602,6 +667,67 @@ def _apply_adp_margin_tie_break(top_results: list[dict[str, Any]], next_turn_pic
     return [preferred] + [r for r in top_results if r is not preferred]
 
 
+def _adaptively_resolve_tie(
+    draft_state: DraftState,
+    players_by_id: dict[str, dict[str, Any]],
+    adp_ranks: dict[str, float],
+    tied_player_ids: list[str],
+    rng: np.random.Generator,
+    candidate_breadth: int,
+    tree_depth: int,
+    rollout_extra_picks: int,
+    rollout_sim_count: int,
+    risk_aversion: float,
+    batch_size: int = ADAPTIVE_RESOLUTION_BATCH_SIZE,
+    max_iterations: int = ADAPTIVE_RESOLUTION_MAX_ITERATIONS,
+) -> tuple[dict[str, "_Node"], int]:
+    """
+    CHUNK 26 -- see module docstring's CHUNK 26 FIX section for the full
+    root-cause evidence. Gives ONLY `tied_player_ids` a fresh, dedicated
+    MCTS search (a new root whose `untried` list is exactly this group --
+    the same real, unmodified `_run_iteration` production uses, not a
+    reimplementation) instead of the diluted share they'd get competing
+    against up to CANDIDATE_BREADTH-1 other root candidates for
+    `recommend()`'s normal ITERATIONS budget. Runs in `batch_size`-sized
+    chunks up to `max_iterations`, checking after every batch whether the
+    group has resolved -- using the EXACT SAME near-tie definition
+    `within_noise_of_leader` uses everywhere else (NEAR_TIE_Z), not a
+    separate/inconsistent threshold -- and stopping early once only one
+    candidate remains "not within noise" of the current leader (nothing
+    left to resolve further). Returns ({player_id: _Node}, iterations_used)
+    so the caller can both read the sharper estimates AND report how much
+    extra work this call actually did.
+    """
+    root = _Node(draft_state, depth=0, player_id=None, parent=None, untried=list(tied_player_ids))
+    reward_stats = _RewardStats()
+    done = 0
+    while done < max_iterations:
+        batch = min(batch_size, max_iterations - done)
+        for _ in range(batch):
+            _run_iteration(
+                root, reward_stats, players_by_id, adp_ranks, rng,
+                tree_depth, candidate_breadth, rollout_extra_picks, rollout_sim_count, risk_aversion,
+            )
+        done += batch
+
+        children = list(root.children.values())
+        if len(children) < 2:
+            break
+        leader_node = max(children, key=lambda c: c.mean_value)
+        leader_se = leader_node.stderr or 0.0
+        still_tied = 0
+        for c in children:
+            c_se = c.stderr or 0.0
+            combined_se = (leader_se**2 + c_se**2) ** 0.5
+            margin = leader_node.mean_value - c.mean_value
+            if c is leader_node or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se):
+                still_tied += 1
+        if still_tied <= 1:
+            break
+
+    return root.children, done
+
+
 def recommend(
     draft_state: DraftState,
     players_by_id: dict[str, dict[str, Any]],
@@ -694,22 +820,63 @@ def recommend(
             margin = leader["mcts_score"] - r["mcts_score"]
             r["within_noise_of_leader"] = r is leader or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se)
 
-        # CHUNK 24: among candidates just flagged as a statistical near-tie,
-        # prefer whichever real market ADP says is most at risk of being
-        # gone by the user's next turn -- see module docstring's CHUNK 24
-        # FIX section and _apply_adp_margin_tie_break's docstring.
+        # CHUNK 26: before falling back to the ADP-margin tie-break, try to
+        # resolve the tie on its own terms first -- see module docstring's
+        # CHUNK 26 FIX section. `recommend()`'s normal ITERATIONS budget is
+        # diluted across up to CANDIDATE_BREADTH root candidates; several
+        # "ties" turn out to be an artifact of that dilution, not genuine
+        # model indifference.
+        tied_now = [r for r in top_results if r["within_noise_of_leader"]]
+        adaptive_iterations_used = 0
+        if len(tied_now) >= 2:
+            tied_pids = [r["player_id"] for r in tied_now]
+            resolved_children, adaptive_iterations_used = _adaptively_resolve_tie(
+                draft_state, players_by_id, adp_ranks, tied_pids, rng,
+                candidate_breadth, tree_depth, rollout_extra_picks, rollout_sim_count, risk_aversion,
+            )
+            by_pid = {r["player_id"]: r for r in top_results}
+            for pid, child in resolved_children.items():
+                by_pid[pid]["mcts_score"] = round(child.mean_value, 1)
+                by_pid[pid]["mcts_score_stderr"] = round(child.stderr, 2) if child.stderr is not None else None
+                by_pid[pid]["mcts_visits"] = child.visits
+
+            top_results.sort(key=lambda r: r["mcts_score"], reverse=True)
+            leader = top_results[0]
+            leader_se = leader["mcts_score_stderr"] or 0.0
+            for r in top_results:
+                r_se = r["mcts_score_stderr"] or 0.0
+                combined_se = (leader_se**2 + r_se**2) ** 0.5
+                margin = leader["mcts_score"] - r["mcts_score"]
+                r["within_noise_of_leader"] = r is leader or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se)
+
+        adaptive_resolution_applied = len(tied_now) >= 2
+        adaptive_fully_resolved = adaptive_resolution_applied and sum(1 for r in top_results if r["within_noise_of_leader"]) == 1
+
+        # CHUNK 24 (now demoted to a FALLBACK, per CHUNK 26 -- see that
+        # section's docstring): among candidates STILL flagged tied after
+        # adaptive resolution, prefer whichever real market ADP says is
+        # most at risk of being gone by the user's next turn. Skipped
+        # entirely when adaptive resolution already found a confident
+        # winner -- Chunk 25 Task 3 found cross-checking a resolved winner
+        # against ADP margin can overturn a genuinely better pick for a
+        # merely safer-sounding one.
         pre_tie_break_leader_name = leader["name"]
-        top_results = _apply_adp_margin_tie_break(top_results, _next_turn_pick_no(draft_state))
+        if not adaptive_fully_resolved:
+            top_results = _apply_adp_margin_tie_break(top_results, _next_turn_pick_no(draft_state))
         leader = top_results[0]
         adp_tie_break_applied = leader["name"] != pre_tie_break_leader_name
         tied_with_leader = [r["name"] for r in top_results if r["within_noise_of_leader"] and r is not leader]
     else:
+        adaptive_resolution_applied = False
+        adaptive_iterations_used = 0
         adp_tie_break_applied = False
         tied_with_leader = []
 
     return {
         "recommendations": top_results,
         "top_pick_statistically_tied_with": tied_with_leader,
+        "adaptive_resolution_applied": adaptive_resolution_applied,
+        "adaptive_iterations_used": adaptive_iterations_used,
         "adp_tie_break_applied": adp_tie_break_applied,
         "candidates_considered": root_candidates,
         "iterations_run": iterations,

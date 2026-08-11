@@ -69,7 +69,12 @@ from app.services.sleeper import sleeper_client
 
 logger = logging.getLogger("ff_draft_assistant.projections")
 
-FANTASY_POSITIONS = {"QB", "RB", "WR", "TE"}
+# CHUNK 26: kept as a tuple (not a `set`), matching vbd.py's own constant
+# of the same name -- see that module's comment for why order matters for
+# a sibling constant (SUPER_FLEX_ELIGIBLE) with the exact same hash-
+# randomization risk; harmless here since both usages are membership tests,
+# but there's no reason for this and vbd.py's copy to differ in kind.
+FANTASY_POSITIONS = ("QB", "RB", "WR", "TE")
 
 # nflverse (nfl_data_py's data source) publishes a season's stats sometime
 # after that season wraps, and this is not always in sync with "the current

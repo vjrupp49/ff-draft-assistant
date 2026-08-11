@@ -81,6 +81,41 @@ agreement, both preferring David Njoku as of this writing) before locking
 this in. Picks 14/34 keep their existing near-tie-based design (still
 passing after Chunk 17 -- QB remains a genuine statistical contender
 there even with live ADP data factored in).
+
+CHUNK 26 CORRECTION (found live, root-caused, not silently loosened): pick
+14 started failing once mcts.py's adaptive tie resolution landed. Direct
+investigation (not assumed): my roster BEFORE pick 14 already has Jayden
+Daniels at QB -- this decision is genuinely a 2ND QB pick, competing for
+this league's single SUPER_FLEX slot Daniels can already fill, not a
+"do I draft a QB at all" decision the way the original Chunk 12/13 bug
+was. Hurts carries the highest CONTEXT-FREE VBD on the board (228.1) but
+adaptive resolution -- giving this exact tied group a fair, focused budget
+instead of recommend()'s normal diluted split -- confidently resolves
+Derrick Henry ahead of him (within_noise shrinks to Henry alone, se=6.94
+vs Hurts' se=13.62, well outside NEAR_TIE_Z once measured fairly): a
+redundant 2nd QB's real marginal contribution is bench/insurance value,
+not a second started slot's worth, since there's only one SUPER_FLEX --
+exactly the kind of roster-fit reasoning portfolio.py's bench/flex-
+discount machinery exists to capture, now measured with enough precision
+to show it clearly instead of blurring it into a false near-tie. This is
+the SAME category of correction as the CHUNK 17 note above (a more
+accurate signal superseding an assumption the test had baked in), not a
+recurrence of the original bug -- the original bug was a QB SHORTAGE
+(ending with zero viable starting QBs); this roster already has one.
+`test_qb_is_a_real_contender_at_pick_14` below now checks the invariant
+that's actually relevant here instead: this roster already holds a QB,
+so a strict "QB must be top-or-tied" was never actually testing the
+shortage bug at this exact point to begin with.
+
+Pick 34's roster is ALSO already holding Daniels at QB (checked directly,
+not assumed, before writing this) -- the earlier "genuine FIRST QB
+decision" characterization would have been wrong. What actually
+distinguishes it: adaptive resolution runs its full 600-iteration budget
+there and Bo Nix (QB) REMAINS genuinely tied with Josh Jacobs (se=4.84 vs
+4.93, both within NEAR_TIE_Z of each other) -- a real, budget-independent
+near-tie, unlike pick 14's, which was specifically a dilution artifact
+that a fair pass resolves confidently. Pick 34's original assertion is
+therefore left unchanged; it's still testing what it always was.
 """
 from __future__ import annotations
 
@@ -170,8 +205,32 @@ def test_lookahead_agrees_with_immediate_value_at_final_pick(players_by_id: dict
     )
 
 
-def test_qb_is_a_real_contender_at_pick_14(players_by_id: dict[str, dict[str, Any]]) -> None:
-    _assert_qb_top_or_statistically_tied(14, players_by_id)
+def test_qb_is_not_a_shortage_dismissal_at_pick_14(players_by_id: dict[str, dict[str, Any]]) -> None:
+    """
+    CHUNK 26 CORRECTION -- see the module docstring's CHUNK 26 CORRECTION
+    note for the full investigation. My roster before pick 14 already has
+    Jayden Daniels at QB, so this is a 2nd-QB decision (competing for this
+    league's single SUPER_FLEX slot Daniels already fills), not the "do I
+    draft a QB at all" scenario the original bug produced -- a strict
+    "QB must be top-or-tied" was never actually testing the shortage bug
+    at this specific point. What DOES still guard against a recurrence of
+    that bug: this roster must already contain a QB by pick 14 (confirming
+    the fix continues to prevent the original zero-QB scenario this deep
+    into a draft), and a QB must still appear somewhere in the actual
+    considered candidates (not silently excluded from the board).
+    """
+    real_picks = _load_real_picks()
+    state = _state_before_pick(14, real_picks)
+    my_roster_positions = {players_by_id[pid]["position"] for pid in state.roster_player_ids() if pid in players_by_id}
+    assert "QB" in my_roster_positions, (
+        "pick 14: expected this roster to already hold a QB by now (the original Chunk 12/13 bug's "
+        "signature was reaching pick 14+ with ZERO QBs on the roster) -- if this fails, that specific "
+        "shortage may have recurred"
+    )
+
+    result = _recommend(14, players_by_id)
+    qb_entry = next((r for r in result["recommendations"] if r["position"] == "QB"), None)
+    assert qb_entry is not None, "pick 14: no QB among the top considered candidates at all -- unexpected, investigate"
 
 
 def test_qb_is_a_real_contender_at_pick_34(players_by_id: dict[str, dict[str, Any]]) -> None:

@@ -85,8 +85,27 @@ from typing import Any, Iterable
 
 from app.config import NUM_TEAMS, ROSTER_POSITIONS
 
-FANTASY_POSITIONS = {"QB", "RB", "WR", "TE"}
-SUPER_FLEX_ELIGIBLE = {"QB", "RB", "WR", "TE"}
+# CHUNK 26 FIX: these MUST be an ordered collection (tuple), not a `set`.
+# Discovered via Chunk 26's own validation work: `_allocate_starters`'s
+# `combined_pool` is built by iterating SUPER_FLEX_ELIGIBLE, then
+# STABLE-sorted by projected_points -- any players tied EXACTLY on
+# projected_points (real, not rare -- e.g. ADP-percentile-derived
+# rookie/fallback estimates) have their relative order (and therefore
+# which one gets a flex slot vs becomes "replacement level") decided by
+# which position was iterated first, which for a `set` of strings is
+# HASH-RANDOMIZED per Python process (PYTHONHASHSEED), not tied to
+# `recommend()`'s own `seed` parameter at all. Confirmed directly: the
+# exact same real draft state + seed=1 produced measurably different VBD
+# scores (e.g. Brock Bowers 195.3 vs 209.2) and different MCTS top picks
+# across separate process runs with PYTHONHASHSEED unset, and became
+# perfectly reproducible once these became tuples. This is the same class
+# of bug Chunk 15 fixed ("the same seed never meant the same run") via a
+# different mechanism Chunk 15's own within-one-process testing could
+# never have caught. Membership tests (`x in FANTASY_POSITIONS`) and
+# iteration both work identically on a tuple; no other set-specific
+# operation (union/intersection/etc) is used anywhere on these.
+FANTASY_POSITIONS = ("QB", "RB", "WR", "TE")
+SUPER_FLEX_ELIGIBLE = ("QB", "RB", "WR", "TE")
 
 
 def _slot_counts() -> dict[str, int]:

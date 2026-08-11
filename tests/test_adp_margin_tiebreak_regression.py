@@ -147,14 +147,27 @@ def test_all_unmatched_tied_candidates_falls_back_to_existing_ranking_unchanged(
 # Real-draft replay: picks 59/79/39 are the exact real decision points
 # Chunks 23-24 diagnosed. This locks in that the fix actually changes the
 # top recommendation the way the diagnostic predicted it should.
+#
+# CHUNK 26 CORRECTION: pick 39 originally asserted Josh Jacobs here (the
+# ADP tie-break's own pick at the time). Chunk 26 added adaptive tie
+# resolution AHEAD of this tie-break -- at pick 39/seed=1 that pass now
+# fully resolves the group on its own (Brock Bowers separates confidently,
+# see test_adaptive_resolution_regression.py's own coverage of this exact
+# pick), so the ADP tie-break never fires there anymore
+# (`adp_tie_break_applied` is False). This is Chunk 26's fix working as
+# designed -- adaptive resolution taking precedence over the ADP fallback
+# per its own root-cause finding (Chunk 25 Task 3: a confidently-resolved
+# winner can genuinely differ from the ADP tie-break's pick) -- not a
+# regression in this one. Picks 59/79 still land on the ADP tie-break
+# (their cores remain genuinely tied even after adaptive resolution), so
+# those two still directly test what this file is named for.
 # ---------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "pick_no,expected_top_name",
     [
-        (59, "Terry McLaurin"),  # real ADP 63.0, margin +1.0 to next turn (62) -- tightest of the tied set
-        (79, "Tony Pollard"),    # real ADP 83.3, margin +1.3 to next turn (82) -- tightest of the tied set
-        (39, "Josh Jacobs"),     # real ADP 32.4, margin -9.6 to next turn (42) -- already past his real ADP
+        (59, "Terry McLaurin"),  # real ADP 63.0, margin +1.0 to next turn (62) -- tightest of the genuinely-tied set
+        (79, "Tony Pollard"),    # real ADP 83.3, margin +1.3 to next turn (82) -- tightest of the genuinely-tied set
     ],
 )
 def test_tie_break_promotes_the_at_risk_candidate_at_real_decision_points(
