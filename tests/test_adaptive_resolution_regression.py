@@ -19,6 +19,25 @@ Jeudy was the single WORST option in the group (z=18.31 behind Engram).
 `fixtures/chunk22_real_draft_picks.json` (Chunk 24's fixture, reused) is
 the real 150-pick history from the Chunk 22 dry run (my_slot=2) -- these 6
 picks are the exact ones Chunks 25-26 traced.
+
+CHUNK 30 CORRECTION (found live, root-caused, not silently patched): all
+six picks' expected top-name/adaptive/tie-break values below were re-pinned
+after Chunk 30 migrated projections.py off nfl_data_py's dead stats source
+(stuck on 2022-2024 data) onto current 2025 data. Real, meaningful value
+shifts (e.g. Alvin Kamara's and James Conner's real 2025 season-ending
+knee injuries now correctly lowering their projections -- see Chunk 30's
+report) changed which candidates are even in each pick's tied group, so
+several of these outcomes moved. Verified each new outcome directly (real
+ADP alignment, roster context, no LA/LAR-bug involvement beyond what
+Chunk 29 already found and explicitly deferred) before repinning -- not a
+blind re-recording of whatever the code now outputs. Pick 122 specifically
+no longer reproduces the original Jeudy/Njoku/Engram tied group at all
+(the board composition shifted enough that an unrelated QB now leads) --
+its test is loosened to the actual regression signature (Jeudy must never
+win by default) rather than requiring that exact now-gone scenario to
+still exist; the general no-match-fallback MECHANISM is separately covered
+by this file's synthetic unit tests below, which don't depend on live
+data and are unaffected by this migration.
 """
 from __future__ import annotations
 
@@ -54,6 +73,11 @@ def _state_before_pick(pick_no: int, real_picks: list[dict[str, Any]]) -> DraftS
 
 # ---------------------------------------------------------------------
 # The headline regression guard: pick 122's default-promotion bug.
+# CHUNK 30: loosened to the actual bug signature (see module docstring) --
+# the specific Jeudy/Njoku/Engram tied group no longer occurs at this pick
+# with current data, but "Jeudy must never win by default" still holds and
+# is still the thing worth guarding directly against real data, alongside
+# the data-independent synthetic unit tests below.
 # ---------------------------------------------------------------------
 
 def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
@@ -78,13 +102,6 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
         f"candidate in an otherwise-unmatched tied group -- got {top['name']} instead, or the bug has "
         "regressed if this is Jeudy again"
     )
-    assert top["name"] in ("Evan Engram", "David Njoku"), (
-        f"pick 122: expected the adaptively-resolved leader to be one of the two real contenders "
-        f"(Evan Engram or David Njoku), got {top['name']}"
-    )
-    # The ADP tie-break must not have fired here -- both real contenders
-    # are ADP-unmatched, so it should have nothing to promote.
-    assert result["adp_tie_break_applied"] is False
 
 
 # ---------------------------------------------------------------------
@@ -95,12 +112,12 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
 @pytest.mark.parametrize(
     "pick_no,expected_top_name,expect_adaptive_applied,expect_adp_tie_break_applied",
     [
-        (59, "Terry McLaurin", True, True),   # genuine core tie remains -- ADP fallback fires
-        (79, "Tony Pollard", True, True),     # genuine core tie remains -- ADP fallback fires
-        (39, "Brock Bowers", True, False),    # fully resolves on its own at this seed -- no ADP fallback needed
-        (82, "Tony Pollard", True, False),    # resolves (often with early stopping) -- no ADP fallback needed
-        (102, "Mark Andrews", True, False),   # resolves -- no ADP fallback needed
-        (122, "Evan Engram", True, False),    # core tie remains between 2 UNMATCHED players -- ADP fallback is a no-op
+        (59, "Zay Flowers", True, False),      # CHUNK 30: now resolves outright (early stop, 150 iters) -- no ADP fallback needed
+        (79, "Tony Pollard", True, True),      # unchanged -- genuine core tie remains, ADP fallback still fires
+        (39, "Josh Jacobs", True, True),       # CHUNK 30: now needs the ADP fallback (didn't before)
+        (82, "Travis Kelce", False, False),    # CHUNK 30: no tie at all now -- adaptive resolution never triggers
+        (102, "Matthew Stafford", True, False),  # CHUNK 30: resolves via adaptive alone
+        (122, "Matthew Stafford", True, False),  # CHUNK 30: different board entirely -- see headline test above for the actual bug guard
     ],
 )
 def test_adaptive_resolution_replay_matches_expected_behavior(
@@ -127,19 +144,20 @@ def test_adaptive_resolution_can_stop_early_before_the_iteration_cap(
     players_by_id: dict[str, dict[str, Any]],
 ) -> None:
     """
-    Pick 82 at seed=1 resolves quickly (Tony Pollard separates from the
-    rest of the group well before the 600-iteration cap) -- locks in that
-    the early-stopping check actually saves work, not just that a cap
-    exists.
+    CHUNK 30: re-pinned to pick 59 (Zay Flowers separates from the rest of
+    the group in 150 iterations at seed=1 with current data) -- pick 82,
+    used here before Chunk 30, no longer has a tie to resolve at all with
+    current data (see the parametrized test above), so it stopped being a
+    valid example of early-stopping specifically.
     """
     real_picks = _load_real_picks()
-    state = _state_before_pick(82, real_picks)
+    state = _state_before_pick(59, real_picks)
 
     result = mcts_service.recommend(state, players_by_id, seed=SEED)
 
     assert result["adaptive_resolution_applied"] is True
     assert 0 < result["adaptive_iterations_used"] < mcts_service.ADAPTIVE_RESOLUTION_MAX_ITERATIONS, (
         f"expected adaptive resolution to stop early (before the "
-        f"{mcts_service.ADAPTIVE_RESOLUTION_MAX_ITERATIONS}-iteration cap) once pick 82's group resolved, "
+        f"{mcts_service.ADAPTIVE_RESOLUTION_MAX_ITERATIONS}-iteration cap) once pick 59's group resolved, "
         f"got {result['adaptive_iterations_used']} iterations used"
     )

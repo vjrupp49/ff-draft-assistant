@@ -76,15 +76,48 @@ logger = logging.getLogger("ff_draft_assistant.projections")
 # but there's no reason for this and vbd.py's copy to differ in kind.
 FANTASY_POSITIONS = ("QB", "RB", "WR", "TE")
 
-# nflverse (nfl_data_py's data source) publishes a season's stats sometime
-# after that season wraps, and this is not always in sync with "the current
-# real-world year" — so we probe backward from PREFERRED_MOST_RECENT_SEASON
-# rather than assuming it's published, and use whichever of the last few
-# seasons actually respond, weighting the most recent one found the
-# heaviest. As of building this chunk, the 2025 season was not yet
-# published upstream, so 2024/2023/2022 were used — bump
-# PREFERRED_MOST_RECENT_SEASON once nflverse catches up; no other code
+# nflverse publishes a season's stats sometime after that season wraps, and
+# this is not always in sync with "the current real-world year" — so we
+# probe backward from PREFERRED_MOST_RECENT_SEASON rather than assuming
+# it's published, and use whichever of the last few seasons actually
+# respond, weighting the most recent one found the heaviest. Bump
+# PREFERRED_MOST_RECENT_SEASON once a new season wraps; no other code
 # changes needed.
+#
+# CHUNK 30 FIX -- STALE DATA SOURCE, ROOT-CAUSED (Chunk 29) AND FIXED: this
+# module used to call nfl_data_py's `import_weekly_data`, which fetches
+# from nflverse-data's "player_stats" GitHub release. That release's last
+# asset is player_stats_2024.parquet (published May 2025) -- nflverse
+# rebuilt their entire stats pipeline in 2025 (new schema, confirmed via a
+# direct diff against the old one -- see _fetch_weekly_stats below) and
+# moved it to a NEW release, "stats_player", which nfl_data_py 0.3.3 (the
+# latest release on PyPI) was never updated to point at. Confirmed directly
+# via nfl_data_py's own GitHub issues (#140, #144, both closed) that the
+# maintainers consider this permanent, not a lag -- they explicitly
+# recommend `nflreadpy` (their newer successor package) instead of a patch
+# to this one. This meant every projection for every established veteran
+# was silently stuck on data up to 2 real seasons stale, with ZERO
+# visibility into anything that happened since (e.g. Alvin Kamara's and
+# James Conner's real 2025 season-ending knee injuries, confirmed directly
+# via nfl_data_py's own -- still-working -- `import_injuries` endpoint,
+# were completely invisible to this pipeline before this fix).
+#
+# FIX CHOICE (nflreadpy vs. a direct fetch against the new release,
+# evaluated before picking): nflreadpy's own PyPI listing marks it
+# "Lifecycle: experimental", and its primary dependency is `polars`, not
+# pandas (pandas support is an optional extra) -- adopting it would add six
+# new transitive dependencies (polars, pydantic, pydantic-settings, tqdm,
+# platformdirs, requests) for a young, still-changing package, in a project
+# that has otherwise stayed deliberately dependency-light. A direct fetch
+# against nflverse's new, CONFIRMED-current release URL needs zero new
+# dependencies (pandas + fastparquet are already installed, transitively
+# via nfl_data_py, which is kept for `import_ids()` -- unaffected by this
+# migration, verified directly) and the actual schema change is small and
+# fully audited (see _fetch_weekly_stats). The tradeoff, named honestly:
+# we now own noticing if nflverse renames things again, rather than
+# outsourcing that to a maintained package -- an acceptable trade given
+# this fix doubles as the exact runbook for detecting and re-fixing that
+# if it recurs.
 PREFERRED_MOST_RECENT_SEASON = 2025
 SEASONS_TO_PROBE = 4
 MAX_SEASONS_USED = 3
@@ -142,6 +175,35 @@ def _load_sleeper_to_gsis_map() -> dict[str, str]:
     }
 
 
+# CHUNK 30: nflverse's CURRENT weekly player-stats release (superseding
+# nfl_data_py's dead "player_stats" release -- see the CHUNK 30 FIX note
+# above PREFERRED_MOST_RECENT_SEASON). Same asset-per-year layout
+# nfl_data_py's own `import_weekly_data` used internally, just pointed at
+# the release nflverse actually maintains now.
+WEEKLY_STATS_URL_TEMPLATE = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{year}.parquet"
+
+# CHUNK 30: the only columns this module actually reads (_score_row,
+# _season_player_stats) that nflverse renamed in the 2025 schema rewrite --
+# confirmed by diffing the full old-release (2024) vs new-release (2025)
+# column sets directly, not assumed from the GitHub issue thread alone.
+# `dakota` was also renamed (-> passing_cpoe) but is never read here, so
+# it's intentionally left out of this map. Remaps INCOMING columns back to
+# the names the rest of this module already expects, so _score_row/
+# _season_player_stats need no changes at all.
+WEEKLY_STATS_COLUMN_REMAP = {
+    "team": "recent_team",
+    "passing_interceptions": "interceptions",
+}
+
+
+def _fetch_weekly_stats(year: int) -> pd.DataFrame:
+    """Fetches one season's weekly player stats directly from nflverse's
+    current release (see CHUNK 30 FIX note above), remapped to the column
+    names this module's existing processing functions expect."""
+    df = pd.read_parquet(WEEKLY_STATS_URL_TEMPLATE.format(year=year), engine="auto")
+    return df.rename(columns=WEEKLY_STATS_COLUMN_REMAP)
+
+
 def _probe_available_seasons() -> dict[int, pd.DataFrame]:
     """
     Try seasons back from PREFERRED_MOST_RECENT_SEASON until MAX_SEASONS_USED
@@ -151,9 +213,9 @@ def _probe_available_seasons() -> dict[int, pd.DataFrame]:
     frames: dict[int, pd.DataFrame] = {}
     for year in (PREFERRED_MOST_RECENT_SEASON - i for i in range(SEASONS_TO_PROBE)):
         try:
-            df = nfl.import_weekly_data([year])
-        except Exception as exc:  # nfl_data_py surfaces plain urllib HTTPError etc.
-            logger.info("Season %s not available from nfl_data_py yet (%s)", year, exc)
+            df = _fetch_weekly_stats(year)
+        except Exception as exc:  # HTTP errors, missing-asset, etc.
+            logger.info("Season %s not available yet (%s)", year, exc)
             continue
         df = df[df["season_type"] == "REG"]
         if df.empty:

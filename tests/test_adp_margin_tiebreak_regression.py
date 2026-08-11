@@ -161,13 +161,22 @@ def test_all_unmatched_tied_candidates_falls_back_to_existing_ranking_unchanged(
 # regression in this one. Picks 59/79 still land on the ADP tie-break
 # (their cores remain genuinely tied even after adaptive resolution), so
 # those two still directly test what this file is named for.
+#
+# CHUNK 30 CORRECTION: after migrating projections.py off nfl_data_py's
+# dead stats source onto current 2025 data (see that chunk's report), the
+# picture flipped again -- pick 59 now resolves on its own (adaptive
+# resolution alone, no tie-break needed, see
+# test_adaptive_resolution_regression.py), while pick 39 now DOES land on
+# the ADP tie-break (Josh Jacobs, real ADP 32.4 -- the tightest margin of
+# its now-current tied group). Re-verified each directly (roster context,
+# real ADP alignment) before repinning, not a blind re-recording.
 # ---------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "pick_no,expected_top_name",
     [
-        (59, "Terry McLaurin"),  # real ADP 63.0, margin +1.0 to next turn (62) -- tightest of the genuinely-tied set
-        (79, "Tony Pollard"),    # real ADP 83.3, margin +1.3 to next turn (82) -- tightest of the genuinely-tied set
+        (79, "Tony Pollard"),   # real ADP 83.3, margin +1.3 to next turn (82) -- tightest of the genuinely-tied set
+        (39, "Josh Jacobs"),    # CHUNK 30: real ADP 32.4 -- now the tightest margin of pick 39's current tied group
     ],
 )
 def test_tie_break_promotes_the_at_risk_candidate_at_real_decision_points(

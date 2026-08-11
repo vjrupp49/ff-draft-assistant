@@ -116,6 +116,17 @@ there and Bo Nix (QB) REMAINS genuinely tied with Josh Jacobs (se=4.84 vs
 near-tie, unlike pick 14's, which was specifically a dilution artifact
 that a fair pass resolves confidently. Pick 34's original assertion is
 therefore left unchanged; it's still testing what it always was.
+
+CHUNK 30 CORRECTION: pick 34 stopped being a genuine near-tie once
+projections.py was migrated off nfl_data_py's dead stats source (stuck on
+2022-2024 data) onto current 2025 data (see that chunk's report). With
+more decisive, current data, Derrick Henry now separates confidently from
+Jared Goff at this exact point (se=9.91 vs se=27.38) -- the SAME
+legitimate "redundant 2nd QB, correctly resolved" mechanism the CHUNK 26
+CORRECTION above already validated for pick 14, just now also reaching
+pick 34 because the underlying data got sharper. `test_qb_is_a_real_contender_at_pick_34`
+is replaced with `test_qb_is_not_a_shortage_dismissal_at_pick_34`, mirroring
+pick 14's fix exactly (same invariant, same reasoning) -- not a new pattern.
 """
 from __future__ import annotations
 
@@ -233,5 +244,31 @@ def test_qb_is_not_a_shortage_dismissal_at_pick_14(players_by_id: dict[str, dict
     assert qb_entry is not None, "pick 14: no QB among the top considered candidates at all -- unexpected, investigate"
 
 
-def test_qb_is_a_real_contender_at_pick_34(players_by_id: dict[str, dict[str, Any]]) -> None:
-    _assert_qb_top_or_statistically_tied(34, players_by_id)
+def test_qb_is_not_a_shortage_dismissal_at_pick_34(players_by_id: dict[str, dict[str, Any]]) -> None:
+    """
+    CHUNK 30 CORRECTION -- see the module docstring's CHUNK 30 CORRECTION
+    note. Pick 34 is ALSO a 2nd-QB decision (roster already holds Jayden
+    Daniels, same as pick 14) -- Chunk 26 had left this one alone because,
+    at the time, adaptive resolution ran its full 600-iteration budget here
+    and Bo Nix genuinely stayed tied with Josh Jacobs (a real, not diluted,
+    near-tie). After Chunk 30's data migration, this now resolves
+    confidently (Derrick Henry, se=9.91, clearly separated from Jared Goff,
+    se=27.38, not within_noise) -- the same legitimate mechanism as pick
+    14's correction, just now also reaching this pick because the
+    underlying data is more decisive. Same reasoning, same fix: check the
+    invariant that's actually relevant (roster already holds a QB, QB still
+    appears among considered candidates) instead of a strict top-or-tied
+    assertion this was never really testing for a 2nd-QB decision.
+    """
+    real_picks = _load_real_picks()
+    state = _state_before_pick(34, real_picks)
+    my_roster_positions = {players_by_id[pid]["position"] for pid in state.roster_player_ids() if pid in players_by_id}
+    assert "QB" in my_roster_positions, (
+        "pick 34: expected this roster to already hold a QB by now (the original Chunk 12/13 bug's "
+        "signature was reaching pick 34+ with ZERO QBs on the roster) -- if this fails, that specific "
+        "shortage may have recurred"
+    )
+
+    result = _recommend(34, players_by_id)
+    qb_entry = next((r for r in result["recommendations"] if r["position"] == "QB"), None)
+    assert qb_entry is not None, "pick 34: no QB among the top considered candidates at all -- unexpected, investigate"
