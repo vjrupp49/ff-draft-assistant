@@ -32,6 +32,22 @@ free key (approval-gated, not instant) and isn't wired in yet for that
 reason. Once a key is approved, a second projection source could still be
 blended in here alongside ADP. Do not add it without flagging the
 key/cost to the user first.
+
+CHUNK 21 ADDITION -- `market_adp`/`market_adp_stdev` ON EVERY PLAYER:
+Chunks 17/18 only ever called `_find_adp_match` for the two point-estimate
+cases above (low_confidence rookies, team_changed veterans) -- established
+veterans never got their real ADP looked up or stored anywhere, because
+nothing needed it yet. Chunk 21 found a second, genuinely different
+consumer for the SAME already-fetched FFC data: app/services/opponent_model.py's
+"will this player still be there next turn" pick-timing model, which was
+using a self-referential VBD-based rank as an ADP PROXY instead (see that
+module's own former docstring) -- confirmed, via a live-draft replay, to be
+a ~4x worse predictor of real opponent pick timing than this same real ADP
+data already being fetched right here. This loop attaches the raw
+`adp`/`stdev` fields to EVERY player (reusing the exact same
+adp_lookup/adp_by_position/_find_adp_match built above -- no new fetch, no
+duplicated matching logic), purely additive: it does not touch
+projected_points for anyone, including the two cases above.
 """
 
 from __future__ import annotations
@@ -489,6 +505,17 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
                 # we genuinely don't know, and this should read as "wide" relative
                 # to a real multi-season player's spread.
                 record["projected_points_stddev"] = round(fallback * 0.5, 1)
+
+    # CHUNK 21: attach real market ADP to EVERY player (not just the
+    # low_confidence/team_changed subsets handled above) -- see the module
+    # docstring's CHUNK 21 ADDITION note. Reuses the same lookup/closure
+    # built above; None for the ~78% of the pool the real ADP market
+    # doesn't track at all (see opponent_model.py's build_market_adp_ranks
+    # for how that's handled downstream).
+    for record in players_out:
+        market_match = _find_adp_match(record["name"], record["position"])
+        record["market_adp"] = market_match["record"]["adp"] if market_match else None
+        record["market_adp_stdev"] = market_match["record"].get("stdev") if market_match else None
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

@@ -103,6 +103,29 @@ full simulated mean, for the same speed reason). This does NOT touch
 portfolio.py, shapley.py, or any BENCH_DISCOUNT constant -- none of them
 were broken; only this rollout's candidate-selection policy was.
 
+CHUNK 21 FINDING -- "WAIT VALUE" WAS ALREADY A CONCEPT HERE, JUST FED BAD
+DATA: user feedback after a live draft (Chunk 19) described two symptoms --
+reaching for a player who'd almost certainly still be there many rounds
+later, and taking an obscure player early who's barely drafted in real
+leagues at all. The natural-sounding diagnosis would be "this engine has
+no concept of expected-value-of-waiting" -- CONFIRMED FALSE by direct
+trace: that's the entire point of this module's tree+rollout design (see
+the REWARD SIGNAL section above -- "a candidate slightly behind on raw VBD
+right now can still win if opponent behavior... is likely to strip out the
+alternative position entirely before my next turn"). The REAL root cause
+was narrower and entirely inside `_advance_opponents`'s opponent-behavior
+sampling: opponent_model.py's `sample_pick` was scored against a
+self-referential VBD-based ADP proxy (see that module's now-superseded
+docstring section), confirmed via a live 150-pick draft replay to be a
+~4x worse predictor of real pick timing than the real market ADP data
+Chunks 17/18 had already integrated for a DIFFERENT consumer
+(projections.py's point estimates). Fixed by wiring this module's opponent
+sampling to `opponent_model.build_market_adp_ranks` (real ADP, falling
+back to the original VBD proxy only where the real market has no
+coverage) instead of writing a new wait-value mechanism from scratch --
+none was needed; the existing one just needed accurate survival-time data
+to reason over.
+
 CHUNK 13 FIX #2 -- BOUNDED LOOKAHEAD AT DRAFT'S END: a separate, smaller,
 confirmed bug compounding the above for my LAST 1-2 real turns only:
 DraftState has no concept of the draft actually ending at NUM_TEAMS *
@@ -126,7 +149,7 @@ import numpy as np
 from app.config import NUM_DRAFT_ROUNDS
 from app.services._stats import WelfordAccumulator
 from app.services.draft_state import DraftState
-from app.services.opponent_model import build_adp_proxy_ranks, sample_pick
+from app.services.opponent_model import build_adp_proxy_ranks, build_market_adp_ranks, sample_pick
 from app.services.portfolio import (
     BENCH_DISCOUNT_BASE,
     BENCH_DISCOUNT_DECAY,
@@ -494,7 +517,14 @@ def recommend(
     all_players = list(players_by_id.values())
     vbd_full = calculate_vbd(all_players, drafted_player_ids=draft_state.drafted_player_ids)
     vbd_by_player = {p["player_id"]: p for p in vbd_full}
-    adp_ranks = build_adp_proxy_ranks(vbd_full)
+    # CHUNK 21: real market ADP (projections.py's `market_adp`, Chunks
+    # 17/18's FFC data reused) is now the primary "will this player still
+    # be there next turn" signal the rollout's opponent sampling uses, with
+    # the original VBD-based proxy retained only as a fallback for players
+    # the real market doesn't track -- see opponent_model.py's module
+    # docstring for the root-cause evidence.
+    vbd_proxy_ranks = build_adp_proxy_ranks(vbd_full)
+    adp_ranks = build_market_adp_ranks(all_players, vbd_proxy_ranks)
 
     root_candidates = [p["player_id"] for p in vbd_full[:candidate_breadth]]
     if not root_candidates:

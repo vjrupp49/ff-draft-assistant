@@ -356,7 +356,11 @@ class DraftLiveManager:
         assert state is not None
         all_players = list(self.players_by_id.values())
         vbd_ranked = vbd_service.calculate_vbd(all_players, drafted_player_ids=state.drafted_player_ids)
-        adp_ranks = opponent_model.build_adp_proxy_ranks(vbd_ranked)
+        # CHUNK 21: real market ADP is now the primary opponent-timing
+        # signal, VBD-proxy rank kept only as a fallback -- see
+        # opponent_model.py's module docstring.
+        vbd_proxy_ranks = opponent_model.build_adp_proxy_ranks(vbd_ranked)
+        adp_ranks = opponent_model.build_market_adp_ranks(all_players, vbd_proxy_ranks)
         available = [p for p in all_players if p["player_id"] not in state.drafted_player_ids and p["position"] in vbd_service.FANTASY_POSITIONS]
         team_counts = state.position_counts(state.slot_on_the_clock_now, self.players_by_id)
         return opponent_model.sample_pick(rng, team_counts, available, state.current_pick_no, adp_ranks)

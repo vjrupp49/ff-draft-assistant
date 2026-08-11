@@ -26,8 +26,9 @@ THREE STRATEGIES FOR "MY" TEAM:
    correlation/lineup reasoning. The "smart baseline."
 3. "adp_only" -- ranks by RAW projected_points only, always take the
    single best available player. Deliberately NOT the same as
-   opponent_model.py's own ADP proxy (which is itself derived from VBD --
-   using it here would make this baseline identical to strategy 2 and
+   opponent_model.py's own ADP signal (CHUNK 21: real market ADP where
+   available, this league's own VBD-derived proxy as fallback -- using
+   either here would make this baseline too close to strategy 2 and
    defeat the comparison). Raw points, with no awareness AT ALL of this
    league's replacement-level scarcity or SUPER_FLEX format, is a
    reasonable stand-in for what a generic, format-blind market-consensus
@@ -105,7 +106,10 @@ def _pick_adp_only(draft_state: DraftState, players_by_id: dict[str, dict[str, A
 def _opponent_pick(draft_state: DraftState, players_by_id: dict[str, dict[str, Any]], rng: np.random.Generator) -> Optional[str]:
     """One opponent team's pick, via the real opponent_model.py policy (unchanged across all 3 strategies)."""
     vbd_ranked = vbd_service.calculate_vbd(list(players_by_id.values()), drafted_player_ids=draft_state.drafted_player_ids)
-    adp_ranks = opponent_model.build_adp_proxy_ranks(vbd_ranked)
+    # CHUNK 21: real market ADP is now the primary opponent-timing signal,
+    # VBD-proxy rank kept only as a fallback -- see opponent_model.py.
+    vbd_proxy_ranks = opponent_model.build_adp_proxy_ranks(vbd_ranked)
+    adp_ranks = opponent_model.build_market_adp_ranks(list(players_by_id.values()), vbd_proxy_ranks)
     available = _available_players(players_by_id, draft_state.drafted_player_ids)
     team_counts = draft_state.position_counts(draft_state.slot_on_the_clock_now, players_by_id)
     return opponent_model.sample_pick(rng, team_counts, available, draft_state.current_pick_no, adp_ranks)
