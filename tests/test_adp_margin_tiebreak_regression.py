@@ -170,13 +170,25 @@ def test_all_unmatched_tied_candidates_falls_back_to_existing_ranking_unchanged(
 # the ADP tie-break (Josh Jacobs, real ADP 32.4 -- the tightest margin of
 # its now-current tied group). Re-verified each directly (roster context,
 # real ADP alignment) before repinning, not a blind re-recording.
+#
+# CHUNK 31 CORRECTION (LA/LAR team-abbreviation fix -- isolated from the
+# Chunk 30 migration above): fixing team_changed()'s "LA" vs "LAR"
+# mismatch (see app/services/adp.py and test_adaptive_resolution_regression.py's
+# own matching correction for the full root-cause writeup) restored Kyren
+# Williams' real projected_points (277.8, up from a wrongly-suppressed
+# 177.3), which now beats Josh Jacobs (242.0, unaffected) outright via
+# adaptive resolution alone -- `adp_tie_break_applied` is False for pick 39
+# now, so it's no longer a valid example of THIS test's specific mechanism
+# (same fate pick 59 had after Chunk 26, see the CHUNK 26 note above).
+# Removed from this parametrize list rather than repinned to a winner this
+# test can't actually demonstrate; pick 79 remains genuinely tied and
+# still exercises the tie-break directly.
 # ---------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "pick_no,expected_top_name",
     [
         (79, "Tony Pollard"),   # real ADP 83.3, margin +1.3 to next turn (82) -- tightest of the genuinely-tied set
-        (39, "Josh Jacobs"),    # CHUNK 30: real ADP 32.4 -- now the tightest margin of pick 39's current tied group
     ],
 )
 def test_tie_break_promotes_the_at_risk_candidate_at_real_decision_points(

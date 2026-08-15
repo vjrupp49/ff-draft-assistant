@@ -267,6 +267,31 @@ def adp_percentile(rank_within_position: int, n_at_position: int) -> float:
 ROLE_CHANGE_ADP_BLEND_WEIGHT = 0.65
 
 
+# CHUNK 31 FIX: nfl_data_py's historical stats (both the original dead
+# release AND Chunk 30's current replacement -- checked directly, still
+# "LA") use "LA" for the Rams; Sleeper's live player data (this function's
+# `current_team` argument) uses "LAR". A naive string comparison flagged
+# EVERY current Rams player as team_changed=True -- confirmed directly
+# during Chunk 29's sanity check (Puka Nacua, Matthew Stafford, Kyren
+# Williams all showed "Team changed (LA -> LAR)" despite never leaving the
+# team), and this was the single largest contributor to an implausible
+# ~24% (240/992) team_changed rate. Checked for other aliasing pairs the
+# same way (diffing the FULL abbreviation sets both nfl_data_py's current
+# source and Sleeper actually use): LA/LAR is the only mismatch found --
+# every other team abbreviation matches exactly on both sides. Separately
+# confirmed `team_agrees()` below (Sleeper vs FFC's ADP data) is NOT at
+# equivalent risk -- FFC already uses "LAR", matching Sleeper.
+TEAM_ABBREVIATION_ALIASES = {"LA": "LAR"}
+
+
+def _normalize_team(team: Optional[str]) -> Optional[str]:
+    """Canonicalizes a team abbreviation before comparison -- see
+    TEAM_ABBREVIATION_ALIASES above for the one confirmed real-world case."""
+    if team is None:
+        return None
+    return TEAM_ABBREVIATION_ALIASES.get(team, team)
+
+
 def team_changed(historical_team: Optional[str], current_team: Optional[str]) -> bool:
     """
     True only when BOTH teams are known and they differ -- a missing
@@ -276,7 +301,14 @@ def team_changed(historical_team: Optional[str], current_team: Optional[str]) ->
     positive. Pulled out as its own pure function (used by
     projections.py's build_baseline_projections) specifically so it's
     unit-testable without needing the full async pipeline.
+
+    CHUNK 31: both sides are normalized via _normalize_team before
+    comparing, so a real team's OWN differing abbreviation conventions
+    across data sources (see TEAM_ABBREVIATION_ALIASES) doesn't read as a
+    trade.
     """
+    historical_team = _normalize_team(historical_team)
+    current_team = _normalize_team(current_team)
     return bool(historical_team and current_team and historical_team != current_team)
 
 

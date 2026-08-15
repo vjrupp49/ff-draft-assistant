@@ -38,6 +38,31 @@ win by default) rather than requiring that exact now-gone scenario to
 still exist; the general no-match-fallback MECHANISM is separately covered
 by this file's synthetic unit tests below, which don't depend on live
 data and are unaffected by this migration.
+
+CHUNK 31 CORRECTION (LA/LAR team-abbreviation fix, isolated from the Chunk
+30 migration above -- this is the exact "no LA/LAR-bug involvement beyond
+what Chunk 29 already found and explicitly deferred" caveat Chunk 30
+flagged): fixing app/services/adp.py's team_changed() (nflverse's "LA" vs
+Sleeper's "LAR" for the Rams were being compared as literally different
+teams) stopped incorrectly flagging every current Rams player as a
+role-change veteran -- which stops incorrectly blending their projection
+65% toward an ADP-derived estimate. Kyren Williams was directly affected:
+his projected_points was wrongly suppressed from his real 277.8 to a
+blended 177.3 under the bug (confirmed by directly re-running the same
+blend math with the pre-fix team_changed() output). That 100-point
+understatement was hiding his true value at picks 39/82 below. Re-verified
+directly (not a blind re-recording) before repinning:
+  - Pick 39: Kyren Williams (real, unsuppressed value 277.8) now
+    outranks Josh Jacobs (242.0, unaffected -- GB isn't an aliased
+    abbreviation) outright via adaptive resolution alone, so the ADP
+    tie-break fallback no longer fires here either (`adp_tie_break_applied`
+    flips True -> False). See test_adp_margin_tiebreak_regression.py's own
+    matching correction for the mirror of this same root cause.
+  - Pick 82: still correctly resolves to Travis Kelce, but Kyren
+    Williams' restored true value now makes it a genuine near-tie at this
+    decision point where it previously wasn't one, so adaptive resolution
+    now engages (`adaptive_resolution_applied` flips False -> True) even
+    though the winner is unchanged.
 """
 from __future__ import annotations
 
@@ -114,8 +139,8 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
     [
         (59, "Zay Flowers", True, False),      # CHUNK 30: now resolves outright (early stop, 150 iters) -- no ADP fallback needed
         (79, "Tony Pollard", True, True),      # unchanged -- genuine core tie remains, ADP fallback still fires
-        (39, "Josh Jacobs", True, True),       # CHUNK 30: now needs the ADP fallback (didn't before)
-        (82, "Travis Kelce", False, False),    # CHUNK 30: no tie at all now -- adaptive resolution never triggers
+        (39, "Kyren Williams", True, False),   # CHUNK 31: LA/LAR fix restores his real value -- see module docstring
+        (82, "Travis Kelce", True, False),     # CHUNK 31: same winner, but now a genuine near-tie -- see module docstring
         (102, "Matthew Stafford", True, False),  # CHUNK 30: resolves via adaptive alone
         (122, "Matthew Stafford", True, False),  # CHUNK 30: different board entirely -- see headline test above for the actual bug guard
     ],
