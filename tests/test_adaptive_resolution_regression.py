@@ -63,6 +63,26 @@ directly (not a blind re-recording) before repinning:
     decision point where it previously wasn't one, so adaptive resolution
     now engages (`adaptive_resolution_applied` flips False -> True) even
     though the winner is unchanged.
+
+CHUNK 33 CORRECTION (TE bench-discount recalibration, BENCH_DISCOUNT_DECAY
+["TE"] 1.0 -> 0.3 -- see portfolio.py's CHUNK 33 FIX note): pick 82 flips
+again, this time the WINNER, not just the tie-break mechanics. Root-caused
+directly (not assumed) by re-instrumenting this exact decision: before
+this fix, MCTS's own rollout continuation could stockpile 2nd/3rd bench
+TEs later in a "take Kelce now" rollout at a flat 0.25 contributed value
+each regardless of how many were already stashed, inflating that branch's
+average simulated reward. With the fix, that same speculative TE-stacking
+future is correctly discounted harder per additional bench TE, so
+Kelce's branch reward drops relative to Tony Pollard's (real ADP 83.4 --
+a tight, genuinely at-risk margin, unaffected by anything TE-related).
+Re-verified directly: at pick 82 (0 TEs on the roster yet), Pollard now
+leads 2156.4 vs Kelce's 2106.3 (combined stderr ~6.3, a real z~8 gap, not
+noise -- `within_noise_of_leader` is False for Kelce). This is the
+INTENDED effect of the fix (discouraging speculative TE depth throughout
+the rollout's simulated future, not just at the literal current pick),
+not a side-effect bug -- Kelce remains a defensible, closely-valued pick,
+just no longer the confident leader once the old bench-TE-stacking
+assumption is removed.
 """
 from __future__ import annotations
 
@@ -140,7 +160,7 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
         (59, "Zay Flowers", True, False),      # CHUNK 30: now resolves outright (early stop, 150 iters) -- no ADP fallback needed
         (79, "Tony Pollard", True, True),      # unchanged -- genuine core tie remains, ADP fallback still fires
         (39, "Kyren Williams", True, False),   # CHUNK 31: LA/LAR fix restores his real value -- see module docstring
-        (82, "Travis Kelce", True, False),     # CHUNK 31: same winner, but now a genuine near-tie -- see module docstring
+        (82, "Tony Pollard", True, False),     # CHUNK 33: TE bench-discount fix flips the winner -- see module docstring
         (102, "Matthew Stafford", True, False),  # CHUNK 30: resolves via adaptive alone
         (122, "Matthew Stafford", True, False),  # CHUNK 30: different board entirely -- see headline test above for the actual bug guard
     ],

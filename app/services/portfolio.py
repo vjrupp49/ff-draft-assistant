@@ -151,11 +151,53 @@ impossible double duty.
     defensive measure for the genuinely-excess case (a 6th/7th+ RB beyond
     what any realistic flex rotation would use) -- precautionary, not a
     response to an observed failure the way QB's fix is.
-  - WR/TE: DECAY=1.0 (unchanged, flat) -- no evidence from Chunk 9 of a
-    problem at either position, so no speculative change; only touch a
+  - WR: DECAY=1.0 (unchanged, flat) -- no evidence from Chunk 9 of a
+    problem at this position, so no speculative change; only touch a
     constant when a real failure or a directly-confirmed risk motivates
     it, consistent with how every other calibration in this project has
     been handled.
+  - TE: DECAY=1.0 at the time of Chunk 9 (unchanged, flat) for the exact
+    same "no evidence, don't touch it" reason WR was left alone -- SEE
+    CHUNK 33 FIX BELOW for why that stopped being true.
+
+CHUNK 33 FIX -- TE'S FLAT BENCH DECAY STOPPED BEING SAFE POST-CHUNK-30:
+Chunk 31/32 confirmed a real, reproducible TE glut (5-seed sweep: TE
+median 4 vs league median 2; a real live mock draft: 5 TE/2 WR final
+roster) that Chunk 20's FLEX_CONCENTRATION_DISCOUNT (below) does NOT
+explain -- diagnosed directly (not assumed) by inspecting actual drafted
+rosters via `evaluate_roster`'s own per-player breakdown: in 4 of 5 Chunk
+31 sweep seeds, only ONE TE per roster ever reaches flex-pool-STARTER
+status (flex_rank=1, which FLEX_CONCENTRATION_DISCOUNT never touches --
+it only discounts flex_rank>=2). The other 2-4 "extra" TEs per roster are
+BENCH players, and TE's BENCH_DISCOUNT_DECAY was still 1.0 (flat) --
+exactly the QB-glut failure mode Chunk 10 already fixed once, just at a
+different position: real 2025 elite-TE production (Chunk 30's migration
+making Trey McBride et al. visible for the first time, confirmed a
+genuine tier effect in Chunk 31 task 4, not McBride-specific) now gives a
+BENCH TE's raw points a high enough floor that even a flat 0.25 haircut
+doesn't stop MCTS from stockpiling a 2nd/3rd/4th one -- the same
+"no realistic season value past the first bench slot" argument Chunk 10
+made for QB applies here now too.
+
+FIX, CALIBRATED (5-seed sweep, slot 7, draft_score strategy, same
+methodology as Chunk 6's risk_aversion sweep -- see this chunk's report
+for the full table): BASE stays 0.25 (the first bench TE is a real,
+legitimately-priced hedge, same reasoning as RB keeping its base) --
+DECAY swept 1.0/0.7/0.5/0.3/0.15: TE median only reaches league parity
+(2, matching the other 9 teams) at DECAY<=0.3, with 0.3 and 0.15
+producing identical results (diminishing returns below 0.3, so 0.3 was
+kept rather than going further with no additional benefit). Explicitly
+checked (Chunk 20 precedent -- a flat all-position version of the FLEX
+discount once caused a NEW WR shortage) for a new regression elsewhere:
+RB stayed at deviation +1.0 (never flagged) across the entire sweep;
+FLEX_CONCENTRATION_DISCOUNT_BASE/DECAY (TE) deliberately left UNTOUCHED
+at their Chunk 20 values -- tightening them further, tested directly
+alongside this fix, pushed RB to a NEW +2.0 deviation (the same
+overcorrection failure mode, confirmed empirically, not assumed) for no
+additional TE benefit once the bench-decay fix is in place. The
+pre-existing WR shortage (present before this fix too, per Chunk 30/31)
+improved (-3.0 -> -2.0 deviation) but was not fully resolved by this
+fix -- left open, flagged for a future chunk, not force-fit here.
 `bench_discount_base`/`bench_discount_decay` are exposed as parameters so
 a future Phase 2 component can replace these with calibrated numbers
 without this module's interface changing.
@@ -186,7 +228,7 @@ BENCH_DISCOUNT_DECAY: dict[str, float] = {
     "QB": 0.5,
     "RB": 0.7,
     "WR": 1.0,
-    "TE": 1.0,
+    "TE": 0.3,  # CHUNK 33: was 1.0 (flat) -- see CHUNK 33 FIX note above
 }
 DEFAULT_BENCH_DISCOUNT_BASE = 0.25  # fallback base for any position missing from the dict above
 DEFAULT_BENCH_DISCOUNT_DECAY = 1.0  # fallback decay (flat, no rank-based reduction)

@@ -96,6 +96,34 @@ still reports PASS/FAIL honestly instead of a silent green, (b) the
 regression stays fully diagnostic-visible for the next chunk, and (c) an
 unexpected XPASS (if a future chunk's fix resolves this) will itself fail
 the suite loudly, forcing the marker to be removed rather than forgotten.
+
+CHUNK 33 UPDATE -- TE HALF FIXED, WR HALF STILL OPEN, MARKERS STAY XFAIL:
+Chunk 32 diagnosed (no code changes) that the TE glut wasn't actually
+FLEX_CONCENTRATION_DISCOUNT's fault post-Chunk-30 -- in most seeds only
+ONE TE per roster ever reaches flex-pool-starter status (which that
+discount never touches); the other 2-4 "extra" TEs land as BENCH players,
+governed by BENCH_DISCOUNT_DECAY["TE"], which was still 1.0 (flat) --
+Chunk 10's exact QB-glut mechanism, just never applied to TE before
+because Chunk 9 found no evidence TE needed it at the time. Chunk 33
+fixed BENCH_DISCOUNT_DECAY["TE"] 1.0 -> 0.3 (calibrated via the same
+5-seed sweep methodology as this file uses -- see portfolio.py's CHUNK 33
+FIX note and this chunk's report for the full sweep table). RESULT,
+RE-VERIFIED AT THIS FILE'S OWN FULL SAMPLE SIZES (not just the 5-seed
+sweep used to calibrate): slot 7 (15 seeds) TE deviation is now exactly
+0.0 (my median 2, league median 2); slot sensitivity (15 runs) TE
+deviation is +1.0 (my median 3, league median 2) -- both within the
++/-1 threshold, TE genuinely fixed, not just improved. BOTH TESTS STILL
+XFAIL, though -- WR is a SEPARATE, PRE-EXISTING shortage (present since
+Chunk 30, not caused by this fix or by the old TE bug) that this chunk's
+narrow TE-only mandate did not fix: slot 7 WR deviation -2.0 (my median
+4, league median 6), slot sensitivity WR deviation -2.0 (my median 4,
+league median 6) -- both improved from Chunk 30's original -3.0/-4.0
+(some WR slots were genuinely being crowded out by the old TE bug) but
+not resolved. Xfail reasons below updated to name WR specifically, not
+left pointing at TE which is no longer the active cause -- same
+discipline as every other repin in this project's history (explain why,
+don't silently change numbers). Flagged for a future chunk, not forced
+here.
 """
 from __future__ import annotations
 
@@ -179,9 +207,10 @@ def _assert_balanced(my_counts: dict[str, list[int]], opp_counts: dict[str, list
 
 @pytest.mark.xfail(
     strict=True,
-    reason="CHUNK 30: real WR shortage / TE glut re-emerged after the data migration (see module docstring's "
-    "CHUNK 30 FINDING) -- not a migration bug, a currently-accurate market inefficiency at TE that Chunk 20's "
-    "flex-concentration constants may need re-validating against. Deferred, not silently loosened.",
+    reason="CHUNK 33: TE glut is FIXED (deviation now 0.0, was +2.0 -- see module docstring's CHUNK 33 UPDATE) via "
+    "BENCH_DISCOUNT_DECAY['TE'], not FLEX_CONCENTRATION_DISCOUNT. Still xfails on a separate, pre-existing WR "
+    "shortage (deviation -2.0, improved from -3.0 but not resolved by this chunk's TE-only fix) -- deferred, not "
+    "silently loosened.",
 )
 def test_positional_balance_slot7_multiseed(players_by_id: dict[str, dict[str, Any]]) -> None:
     """
@@ -197,9 +226,10 @@ def test_positional_balance_slot7_multiseed(players_by_id: dict[str, dict[str, A
 
 @pytest.mark.xfail(
     strict=True,
-    reason="CHUNK 30: real WR shortage / TE glut re-emerged after the data migration (see module docstring's "
-    "CHUNK 30 FINDING) -- not a migration bug, a currently-accurate market inefficiency at TE that Chunk 20's "
-    "flex-concentration constants may need re-validating against. Deferred, not silently loosened.",
+    reason="CHUNK 33: TE glut is FIXED (deviation now +1.0, was +3.0 -- see module docstring's CHUNK 33 UPDATE) via "
+    "BENCH_DISCOUNT_DECAY['TE'], not FLEX_CONCENTRATION_DISCOUNT. Still xfails on a separate, pre-existing WR "
+    "shortage (deviation -2.0, improved from -4.0 but not resolved by this chunk's TE-only fix) -- deferred, not "
+    "silently loosened.",
 )
 def test_positional_balance_slot_sensitivity(players_by_id: dict[str, dict[str, Any]]) -> None:
     """
