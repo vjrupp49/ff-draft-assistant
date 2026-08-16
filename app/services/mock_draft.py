@@ -77,8 +77,24 @@ def _available_players(players_by_id: dict[str, dict[str, Any]], drafted: set[st
 def _pick_draft_score(
     draft_state: DraftState, players_by_id: dict[str, dict[str, Any]], mcts_iterations: int, seed: Optional[int]
 ) -> tuple[str, float]:
+    # CHUNK 37 FIX: was top_n=1, which silently disabled the Chunk 24
+    # ADP-margin tie-break and Chunk 26 adaptive-resolution logic -- both
+    # only operate on the already-truncated `top_results` list inside
+    # mcts.recommend(), so a length-1 list can never contain 2+ "tied"
+    # candidates for either mechanism to act on. Production's real
+    # live-draft path (app/services/draft_score_engine.py) was never
+    # affected -- it calls recommend(top_n=candidate_breadth), matched
+    # here exactly (same constant, not just a coincidentally similar
+    # value) so this harness's "draft_score" strategy reflects the same
+    # decision logic a real draft actually uses. Root-caused in Chunk 36
+    # (found while instrumenting a seed-3 5-QB anomaly); verified there
+    # that the fix changes individual seeds' picks but washes out at the
+    # 5-seed aggregate median -- re-verified formally, not just assumed,
+    # in this chunk's own report.
     t0 = time.perf_counter()
-    result = mcts_service.recommend(draft_state, players_by_id, top_n=1, iterations=mcts_iterations, seed=seed)
+    result = mcts_service.recommend(
+        draft_state, players_by_id, top_n=mcts_service.CANDIDATE_BREADTH, iterations=mcts_iterations, seed=seed
+    )
     elapsed = time.perf_counter() - t0
     if result["recommendations"]:
         return result["recommendations"][0]["player_id"], elapsed
