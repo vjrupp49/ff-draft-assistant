@@ -1,0 +1,550 @@
+/* ---------------------------------------------------------------------
+   FF Draft Assistant — "broadcast scoreboard" skin.
+   Dark, high-contrast, built to be read from across a room, not clicked
+   through. Position colors double as the app's whole accent palette so
+   nothing needs a second, unrelated color system.
+--------------------------------------------------------------------- */
+
+:root {
+  --bg-0: #05070d;
+  --bg-1: #0b0f1a;
+  --bg-2: #121729;
+  --panel: #141a2e;
+  --panel-border: #232a44;
+  --text-hi: #f4f6fb;
+  --text-mid: #9aa3bd;
+  --text-lo: #5c6480;
+
+  --go: #21e6a1;
+  --go-glow: rgba(33, 230, 161, 0.35);
+  --wait: #4a5372;
+  --recalc: #ffb020;
+  --recalc-glow: rgba(255, 176, 32, 0.35);
+  --danger: #ff5470;
+
+  --qb: #b087ff;
+  --rb: #2be08a;
+  --wr: #3ec7ff;
+  --te: #ff9a4d;
+
+  --radius: 18px;
+  --radius-sm: 10px;
+  font-size: 16px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: radial-gradient(ellipse 1200px 800px at 20% -10%, #1a2140 0%, var(--bg-0) 55%),
+              radial-gradient(ellipse 900px 700px at 100% 10%, #201232 0%, transparent 60%),
+              var(--bg-0);
+  color: var(--text-hi);
+  font-family: -apple-system, "Segoe UI", "Inter", system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+.hidden { display: none !important; }
+
+/* ---------------- setup ---------------- */
+
+.setup {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1.25rem;
+}
+
+.setup-card {
+  width: 100%;
+  max-width: 460px;
+  background: linear-gradient(180deg, var(--panel), var(--bg-2));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  padding: 2.25rem 2rem;
+  box-shadow: 0 30px 80px -30px rgba(0,0,0,0.7);
+}
+
+.setup-kicker {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--go);
+  margin-bottom: 0.6rem;
+}
+
+.setup-title {
+  font-size: 2.1rem;
+  font-weight: 800;
+  margin: 0 0 0.35rem;
+  letter-spacing: -0.02em;
+}
+
+.setup-sub {
+  color: var(--text-mid);
+  margin: 0 0 1.75rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.setup-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.1rem;
+}
+
+.setup-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-mid);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.setup-input {
+  flex: 1;
+  background: var(--bg-1);
+  border: 1px solid var(--panel-border);
+  color: var(--text-hi);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  font-size: 1rem;
+  font-weight: 700;
+  min-width: 0;
+}
+
+.setup-input-sm { flex: none; width: 4.5rem; }
+
+.setup-input:focus { outline: none; border-color: var(--go); }
+
+.setup-mode { gap: 0.6rem; }
+
+.mode-btn {
+  flex: 1;
+  background: var(--bg-1);
+  border: 1px solid var(--panel-border);
+  color: var(--text-mid);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.5rem;
+  font-weight: 700;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-btn.active {
+  background: rgba(33, 230, 161, 0.12);
+  border-color: var(--go);
+  color: var(--go);
+}
+
+.mock-options { margin-top: -0.2rem; }
+
+.start-btn {
+  width: 100%;
+  margin-top: 0.5rem;
+  background: var(--go);
+  color: #04180f;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0.9rem;
+  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: 0 8px 30px -8px var(--go-glow);
+  transition: transform 0.1s ease;
+}
+.start-btn:hover { transform: translateY(-1px); }
+.start-btn:active { transform: translateY(0); }
+
+.setup-error {
+  margin-top: 1rem;
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* ---------------- main screen ---------------- */
+
+.screen {
+  min-height: 100vh;
+  padding: 1.5rem 2rem 2.5rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--panel-border);
+  margin-bottom: 1.75rem;
+}
+
+.headline-left { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; }
+
+.pick-meta {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--text-hi);
+}
+.pick-sep { color: var(--text-lo); margin: 0 0.35rem; }
+
+.turn-badge {
+  display: inline-block;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.turn-badge.on-clock {
+  color: #04180f;
+  background: var(--go);
+  box-shadow: 0 0 0 0 var(--go-glow);
+  animation: pulse-go 1.8s ease-in-out infinite;
+}
+.turn-badge.waiting {
+  color: var(--text-mid);
+  background: var(--bg-2);
+  border: 1px solid var(--panel-border);
+}
+.turn-badge.opp {
+  color: var(--text-mid);
+  background: var(--bg-2);
+  border: 1px solid var(--panel-border);
+}
+
+@keyframes pulse-go {
+  0%   { box-shadow: 0 0 0 0 var(--go-glow); }
+  70%  { box-shadow: 0 0 0 14px rgba(33,230,161,0); }
+  100% { box-shadow: 0 0 0 0 rgba(33,230,161,0); }
+}
+
+.session-pill {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-lo);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 2rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .main-grid { grid-template-columns: 1fr; }
+  .screen { padding: 1.25rem 1rem 2rem; }
+}
+
+/* ---------------- hero recommendation card ---------------- */
+
+.hero-card {
+  position: relative;
+  background: linear-gradient(160deg, var(--panel) 0%, var(--bg-2) 100%);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  padding: 2rem 2.25rem 2.25rem;
+  overflow: hidden;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.hero-card.recalculating {
+  border-color: var(--recalc);
+  box-shadow: 0 0 0 1px var(--recalc), 0 20px 60px -20px var(--recalc-glow);
+}
+.hero-card.recalculating .hero-glow { opacity: 1; }
+
+/* Persistent "this number is a projection, not final" state -- distinct
+   from .recalculating above (which is a transient pulse only while a
+   compute is actually in flight). .provisional stays on, dashed rather
+   than pulsing, for as long as the last delivered Draft Score was a
+   preview against simulated opponent picks (see draft_live.py's
+   is_provisional). Found in Chunk 11 that a parenthetical in the body
+   text was too easy to miss for a glanceable second-screen -- this is
+   the fix: a persistent banner + a border treatment + recoloring the
+   score itself, so a provisional number is never visually confusable
+   with a confirmed one even at a glance. */
+.hero-card.provisional {
+  border-color: var(--recalc);
+  border-style: dashed;
+}
+.hero-card.provisional .hero-score { color: var(--recalc); }
+
+.hero-glow {
+  position: absolute;
+  inset: -40% -20% auto -20%;
+  height: 220px;
+  background: radial-gradient(ellipse at center, var(--recalc-glow), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+  animation: drift 3s ease-in-out infinite alternate;
+}
+@keyframes drift { from { transform: translateX(-8%); } to { transform: translateX(8%); } }
+
+.hero-top {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.9rem;
+}
+
+.provisional-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--recalc);
+  color: #241400;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius-sm);
+  margin-bottom: 1.1rem;
+  box-shadow: 0 4px 18px -6px var(--recalc-glow);
+}
+.provisional-icon { font-size: 0.7rem; flex-shrink: 0; }
+
+.pos-pill {
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 0.22rem 0.6rem;
+  border-radius: 6px;
+  color: #04101a;
+}
+.pos-pill.pos-QB { background: var(--qb); }
+.pos-pill.pos-RB { background: var(--rb); }
+.pos-pill.pos-WR { background: var(--wr); }
+.pos-pill.pos-TE { background: var(--te); }
+
+.hero-team {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-mid);
+  letter-spacing: 0.03em;
+}
+
+.tie-badge {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--recalc);
+  border: 1px solid var(--recalc);
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+}
+
+.hero-name {
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  margin-bottom: 1.1rem;
+  word-break: break-word;
+}
+
+.hero-score-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+.hero-score {
+  font-size: clamp(3.2rem, 9vw, 5.5rem);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: var(--go);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-score-label {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+}
+
+.hero-why {
+  font-size: 1.05rem;
+  color: var(--text-mid);
+  line-height: 1.5;
+  max-width: 60ch;
+}
+
+/* ---------------- secondary alternatives list ---------------- */
+
+.alts-block { margin-top: 1.5rem; }
+
+.alts-heading {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--text-lo);
+  margin-bottom: 0.65rem;
+}
+
+.alts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.alt-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.9rem;
+  font-size: 0.92rem;
+}
+
+.alt-rank {
+  color: var(--text-lo);
+  font-weight: 800;
+  width: 1.2rem;
+  flex-shrink: 0;
+}
+
+.alt-name { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.alt-score {
+  font-weight: 800;
+  color: var(--text-hi);
+  font-variant-numeric: tabular-nums;
+}
+
+.alt-empty { color: var(--text-lo); font-size: 0.88rem; padding: 0.4rem 0; }
+
+/* ---------------- live feed ---------------- */
+
+.feed-column {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.25rem 1rem;
+  position: sticky;
+  top: 1.5rem;
+  max-height: calc(100vh - 3rem);
+  display: flex;
+  flex-direction: column;
+}
+
+.feed-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--text-lo);
+  margin-bottom: 0.9rem;
+}
+
+.recalc-badge {
+  color: var(--recalc);
+  background: rgba(255, 176, 32, 0.12);
+  border: 1px solid var(--recalc);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  animation: shimmer 1.3s ease-in-out infinite;
+}
+@keyframes shimmer { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+.feed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 120px;
+}
+
+.feed-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.15rem;
+  border-bottom: 1px solid var(--panel-border);
+  animation: slide-in 0.35s ease;
+  font-size: 0.88rem;
+}
+.feed-item:last-child { border-bottom: none; }
+.feed-item.mine { background: rgba(33, 230, 161, 0.07); border-radius: var(--radius-sm); padding-left: 0.5rem; }
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.feed-pick-no {
+  color: var(--text-lo);
+  font-weight: 700;
+  font-size: 0.75rem;
+  width: 2.1rem;
+  flex-shrink: 0;
+}
+
+.feed-player { flex: 1; min-width: 0; }
+.feed-player-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feed-player-mine-tag {
+  color: var(--go);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  margin-left: 0.4rem;
+}
+
+.feed-empty { color: var(--text-lo); font-size: 0.88rem; padding: 0.5rem 0; }
+
+.feed-stats {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--panel-border);
+  font-size: 0.74rem;
+  color: var(--text-lo);
+}
+.feed-stats span { color: var(--text-mid); font-weight: 700; }
+
+/* number pop animation when the hero score updates */
+.pop { animation: pop 0.45s ease; }
+@keyframes pop {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
