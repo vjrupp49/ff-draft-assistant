@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FF Draft Assistant — Draft Score</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- SETUP PANEL: visible until a session is started, then collapses -->
+  <div id="setup" class="setup">
+    <div class="setup-card">
+      <div class="setup-kicker">KIDDOS LEAGUE · DRAFT SCORE</div>
+      <h1 class="setup-title">Get on the clock.</h1>
+      <p class="setup-sub">Draft on your phone in Sleeper. Watch this screen for the call.</p>
+
+      <div class="setup-row">
+        <label class="setup-label">My draft slot</label>
+        <input id="my-slot" type="number" min="1" max="10" value="1" class="setup-input" />
+      </div>
+
+      <div class="setup-row setup-mode">
+        <button class="mode-btn active" data-mode="live">Live Draft</button>
+        <button class="mode-btn" data-mode="mock">Watch Mock Draft</button>
+      </div>
+
+      <div id="mock-options" class="setup-row mock-options hidden">
+        <label class="setup-label">Seed</label>
+        <input id="mock-seed" type="number" min="1" value="1" class="setup-input setup-input-sm" />
+        <label class="setup-label">Pace (sec/pick)</label>
+        <input id="mock-delay" type="number" min="0" max="10" step="0.5" value="1.5" class="setup-input setup-input-sm" />
+      </div>
+
+      <button id="start-btn" class="start-btn">Start Watching</button>
+      <div id="setup-error" class="setup-error hidden"></div>
+    </div>
+  </div>
+
+  <!-- MAIN SCREEN -->
+  <div id="screen" class="screen hidden">
+
+    <header class="headline">
+      <div class="headline-left">
+        <div class="pick-meta">
+          <span id="round-label" class="round-label">ROUND —</span>
+          <span class="pick-sep">·</span>
+          <span id="pick-label" class="pick-label">PICK —</span>
+        </div>
+        <div id="turn-badge" class="turn-badge waiting">CONNECTING…</div>
+      </div>
+      <div class="headline-right">
+        <div id="session-pill" class="session-pill">— </div>
+      </div>
+    </header>
+
+    <main class="main-grid">
+
+      <!-- LEFT: the recommendation -->
+      <section class="rec-column">
+
+        <div id="hero-card" class="hero-card">
+          <div class="hero-glow"></div>
+          <div id="provisional-banner" class="provisional-banner hidden">
+            <span class="provisional-icon">◆</span>
+            <span>PREVIEW — projecting opponents' next picks, not your actual turn yet</span>
+          </div>
+          <div class="hero-top">
+            <span id="hero-pos" class="pos-pill pos-QB">—</span>
+            <span id="hero-team" class="hero-team">—</span>
+            <span id="hero-tie" class="tie-badge hidden">STAT. TIED</span>
+          </div>
+          <div id="hero-name" class="hero-name">Waiting for data…</div>
+          <div class="hero-score-row">
+            <div id="hero-score" class="hero-score">—</div>
+            <div class="hero-score-label">DRAFT SCORE</div>
+          </div>
+          <div id="hero-why" class="hero-why">Start a session to see your first call.</div>
+        </div>
+
+        <div class="alts-block">
+          <div class="alts-heading">ALSO IN THE MIX</div>
+          <ol id="alts-list" class="alts-list">
+            <li class="alt-empty">—</li>
+          </ol>
+        </div>
+
+      </section>
+
+      <!-- RIGHT: live feed -->
+      <aside class="feed-column">
+        <div class="feed-heading">
+          <span>LIVE FEED</span>
+          <span id="recalc-badge" class="recalc-badge hidden">RECALCULATING…</span>
+        </div>
+        <ul id="feed-list" class="feed-list">
+          <li class="feed-empty">No picks yet.</li>
+        </ul>
+        <div class="feed-stats">
+          <span id="cheap-count">0</span> quick updates · <span id="expensive-count">0</span> full recomputes
+        </div>
+      </aside>
+
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
