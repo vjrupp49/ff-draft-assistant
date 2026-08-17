@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+httpx
+nfl_data_py
+pandas
+numpy
+scipy
+pytest
