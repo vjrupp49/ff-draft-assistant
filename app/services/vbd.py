@@ -77,6 +77,46 @@ reflect this league's real SUPER_FLEX/TE-premium scoring, not an error)
 -- it's specifically a ROSTER-level gap, so this addition only affects
 `allocate_roster_starters`'s callers (portfolio.py/shapley.py/mcts.py),
 never `compute_replacement_levels`'s league-wide math above.
+
+CHUNK 38 FIX -- FLEX+SUPER_FLEX POOL RANKED BY WITHIN-POSITION PERCENTILE,
+NOT RAW POINTS: Chunk 36 root-caused the WR shortage (and a contributing
+factor in a real QB-overdraft anomaly) all the way back to THIS function
+-- step 2's combined pool used to rank every SUPER_FLEX_ELIGIBLE candidate
+by raw `projected_points` against every other position, with zero
+positional-scarcity awareness. Directly confirmed (Chunk 36's distribution
+comparison): QB's raw points structurally beat WR's rank-for-rank through
+roughly rank 20 (QB rank10=284.2 vs WR rank10=227.5), exactly the depth
+where real FLEX/SUPER_FLEX competition happens in this league -- no
+portfolio.py discount constant could ever fix this (Chunks 33/35 both
+confirmed that directly), because this allocation decision happens
+upstream of all of them.
+
+FIX: the combined pool is now ranked by each candidate's PERCENTILE rank
+within their OWN position's remaining pool (same linear rank-to-percentile
+mapping app/services/adp.py's `adp_percentile` already uses for a
+different purpose -- reimplemented locally as `_within_position_percentile`
+rather than importing adp.py directly, since vbd.py is called in this
+project's hottest path (many times per MCTS rollout -- see the
+backlog note on opponent_model.py's own per-call cost) and has been kept
+deliberately free of any app.services dependency; adp.py's own import
+graph (httpx, numpy at module scope) isn't worth pulling into this module
+for a 2-line formula). rank=1 (the best remaining player at a position) ->
+100, worst remaining -> 0, linear in between -- so a team's SUPER_FLEX/FLEX
+decision compares "how good is this player relative to their OWN
+position's remaining pool" across positions, not raw point totals, which
+is what let QB's inherently higher point ceiling (a real, structural
+SUPERFLEX-scoring fact, not a bug) crowd out WR regardless of how good a
+given WR actually was relative to its peers.
+
+Deliberately NOT a QB penalty: a team's actual FIRST and SECOND real QB
+needs (1 dedicated slot + up to 1 SUPER_FLEX slot) are unaffected by this
+change in the cases that matter -- an elite QB (near rank 1 at its
+position) still has a percentile near 100, same as an elite WR/RB/TE
+near rank 1 at theirs, so SUPERFLEX's legitimate QB premium (preserved
+deliberately through Chunks 9/10/13) is untouched for genuinely elite or
+early-needed QBs; what changes is a MEDIOCRE QB no longer automatically
+outranking a genuinely-better-relative-to-its-position WR/RB/TE purely
+because QB's league-wide raw-point ceiling happens to be higher.
 """
 
 from __future__ import annotations
@@ -114,6 +154,22 @@ def _slot_counts() -> dict[str, int]:
     for slot in ROSTER_POSITIONS:
         counts[slot] = counts.get(slot, 0) + 1
     return counts
+
+
+def _within_position_percentile(rank_within_position: int, n_at_position: int) -> float:
+    """
+    CHUNK 38: converts a 1-indexed rank (1 = best) among `n_at_position`
+    same-position players into a percentile in [0, 100], 100 = best --
+    the same linear rank-to-percentile mapping app/services/adp.py's
+    `adp_percentile` uses for a different purpose, reimplemented locally
+    (see module docstring's CHUNK 38 FIX note for why this isn't a direct
+    import). Degenerates to 100.0 if there's only one player remaining at
+    the position (nothing to rank against -- the sole candidate is by
+    definition the best available at its position).
+    """
+    if n_at_position <= 1:
+        return 100.0
+    return 100.0 * (1 - (rank_within_position - 1) / (n_at_position - 1))
 
 
 def _allocate_starters(
@@ -164,10 +220,21 @@ def _allocate_starters(
     super_flex_slots = slot_needs.get("SUPER_FLEX", 0)
     total_flexible_slots = flex_slots + super_flex_slots
 
+    # CHUNK 38: rank by each candidate's percentile WITHIN THEIR OWN
+    # POSITION's remaining pool, not raw projected_points across positions
+    # -- see module docstring's CHUNK 38 FIX note. `remaining[pos]` is
+    # already sorted descending by projected_points (this function's own
+    # precondition), so a player's 1-indexed within-position rank is just
+    # its index in that list.
     combined_pool: list[dict] = []
+    percentile_by_id: dict[str, float] = {}
     for pos in SUPER_FLEX_ELIGIBLE:  # QB, RB, WR, TE
-        combined_pool.extend(remaining.get(pos, []))
-    combined_pool.sort(key=lambda p: p["projected_points"], reverse=True)
+        pos_remaining = remaining.get(pos, [])
+        n_at_position = len(pos_remaining)
+        for rank, p in enumerate(pos_remaining, start=1):
+            percentile_by_id[p["player_id"]] = _within_position_percentile(rank, n_at_position)
+        combined_pool.extend(pos_remaining)
+    combined_pool.sort(key=lambda p: percentile_by_id[p["player_id"]], reverse=True)
 
     qb_seated = 0
     flex_started: set[str] = set()

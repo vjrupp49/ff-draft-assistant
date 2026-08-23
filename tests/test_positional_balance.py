@@ -124,6 +124,25 @@ left pointing at TE which is no longer the active cause -- same
 discipline as every other repin in this project's history (explain why,
 don't silently change numbers). Flagged for a future chunk, not forced
 here.
+
+CHUNK 38 UPDATE -- WR HALF NOW FIXED TOO (slot7_multiseed xfail REMOVED):
+Chunk 38 replaced vbd.py's `_allocate_starters` raw-points FLEX/SUPER_FLEX
+sort with a within-position-percentile ranking (see vbd.py's own CHUNK 38
+FIX docstring) -- the actual root-cause fix for the WR shortage this file
+flagged above, not a discount-constant tweak. `test_positional_balance_
+slot7_multiseed` (15 seeds) now genuinely PASSES -- confirmed as an
+XPASS(strict) failure against the old xfail marker before this update,
+which is exactly the "unexpected XPASS forces the marker to be removed
+rather than forgotten" discipline this file's own docstring committed to
+above. Directly corroborated by this chunk's own 5-seed sweep probe (same
+draft_score/slot-7/30-iteration methodology): WR deviation -2.0 (flagged)
+-> -1.0 (within the +/-1 threshold), QB +1.0 -> +0.0, TE +1.0 -> +0.0, RB
+unchanged at +1.0 -- no overcorrection on any position. Xfail marker
+removed for this test; `test_positional_balance_slot_sensitivity` below
+is UNCHANGED and STILL XFAILS (not part of this chunk's evidence -- did
+not XPASS in the full suite run, still shows the same WR shortage at its
+own slots/seeds) -- left exactly as Chunk 33 pinned it, a future chunk's
+problem, not silently touched here.
 """
 from __future__ import annotations
 
@@ -205,13 +224,6 @@ def _assert_balanced(my_counts: dict[str, list[int]], opp_counts: dict[str, list
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="CHUNK 33: TE glut is FIXED (deviation now 0.0, was +2.0 -- see module docstring's CHUNK 33 UPDATE) via "
-    "BENCH_DISCOUNT_DECAY['TE'], not FLEX_CONCENTRATION_DISCOUNT. Still xfails on a separate, pre-existing WR "
-    "shortage (deviation -2.0, improved from -3.0 but not resolved by this chunk's TE-only fix) -- deferred, not "
-    "silently loosened.",
-)
 def test_positional_balance_slot7_multiseed(players_by_id: dict[str, dict[str, Any]]) -> None:
     """
     Chunk 9's original QB glut (5-8 QBs) and Chunk 13's TE glut/QB
