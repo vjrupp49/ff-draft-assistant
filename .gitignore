@@ -7,5 +7,7 @@ data/baseline_projections.json
 data/player_simulations.json
 data/adp_cache.json
 data/adp_fallback_cache.json
+data/replay_snapshots/
+data/replay_trajectories/
 .env
 server.log

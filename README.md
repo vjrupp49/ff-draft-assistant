@@ -109,6 +109,48 @@ silently reappear:
 12, 13, 15) shows these are exactly the files prone to this class of bug.
 Full suite runtime is ~3-4 minutes.
 
+## Fixed-trajectory replay harness (Chunk 40)
+
+`replay_lib/` + `scripts/replay_cli.py` / `scripts/replay_compare.py` --
+infrastructure for comparing what two git commits' code would recommend
+for the *exact same* decision (same prior picks, same player data), built
+because fresh full-mock-draft comparisons were confounded by two stacked
+sources of noise (live ADP/projection data drifting between runs, and one
+early decision cascading into a different rest-of-draft -- see
+`docs/handoff/V4_chunks_31-.md`'s Chunk 39/40 entries for the full
+motivation). Three pieces:
+
+1. **A named, immutable data snapshot** (`replay_lib.harness.
+   capture_data_snapshot`) -- freezes `projections.build_baseline_
+   projections()`'s output under a name that's never auto-refreshed or
+   overwritten, unlike its own 24h-TTL cache.
+2. **A frozen trajectory** (`replay_lib.harness.freeze_trajectory`) --
+   every pick before a chosen pick number, from a real Sleeper draft's
+   picks OR a synthetic `mock_draft.run_mock_draft()` run, serialized so
+   replay doesn't re-simulate anything before that point.
+3. **The replay itself** (`replay_lib.harness.replay_decision`) -- loads
+   a frozen trajectory + a pinned snapshot and calls `mcts.recommend()`,
+   annotated with would-start status per candidate.
+
+```bash
+# capture today's data once, under a name you'll reuse for every comparison
+python scripts/replay_cli.py snapshot --name my_snapshot
+
+# freeze a decision point from a real pick log (or `freeze-mock` for a fresh synthetic draft)
+python scripts/replay_cli.py freeze-fixture --fixture tests/fixtures/chunk22_real_draft_picks.json \
+    --pick-no 82 --my-slot 2 --name my_trajectory
+
+# compare two commits' code on that exact decision, holding data + trajectory fixed
+python scripts/replay_compare.py --trajectory data/replay_trajectories/my_trajectory.json \
+    --snapshot data/replay_snapshots/my_snapshot.json --ref-a <old-commit> --ref-b HEAD
+```
+
+`replay_compare.py` runs each ref in its own `git worktree`, so it works
+on any commit without touching your working tree. Snapshots/trajectories
+live under `data/replay_snapshots/` / `data/replay_trajectories/`
+(gitignored, generated -- regenerate with the commands above rather than
+expecting them to be checked in).
+
 ## Project structure
 
 ```
