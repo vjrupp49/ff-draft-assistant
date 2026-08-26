@@ -258,7 +258,7 @@ from app.services.portfolio import (
     evaluate_roster,
     flex_concentration_discount_for,
 )
-from app.services.vbd import allocate_roster_starters_with_flex_ranks, calculate_vbd
+from app.services.vbd import allocate_roster_starters_with_flex_ranks, calculate_vbd, compute_league_wide_percentiles
 
 logger = logging.getLogger("ff_draft_assistant.mcts")
 
@@ -443,7 +443,11 @@ def _advance_opponents(
         state.add_pick(pick)
 
 
-def _roster_aware_marginal_value(candidate: dict[str, Any], roster_with_candidate: list[dict[str, Any]]) -> float:
+def _roster_aware_marginal_value(
+    candidate: dict[str, Any],
+    roster_with_candidate: list[dict[str, Any]],
+    percentile_lookup: dict[str, float],
+) -> float:
     """
     Cheap (no Monte Carlo -- see CHUNK 13 FIX above) proxy for how much
     `candidate` actually contributes to a roster that already includes it:
@@ -470,8 +474,14 @@ def _roster_aware_marginal_value(candidate: dict[str, Any], roster_with_candidat
     the SAME blind spot Chunk 13 fixed for the OLD context-free-VBD
     rollout policy, just reintroduced one layer deeper in the NEW
     roster-aware one.
+
+    `percentile_lookup` (CHUNK 39): the stable, whole-search-lifetime
+    table `recommend()` builds once via `compute_league_wide_percentiles`
+    -- passed straight through so this roster's own (often tiny)
+    same-position pool never has to supply its own percentile reference
+    frame. See vbd.py's module docstring CHUNK 39 FIX note.
     """
-    starter_ids, flex_ranks = allocate_roster_starters_with_flex_ranks(roster_with_candidate)
+    starter_ids, flex_ranks = allocate_roster_starters_with_flex_ranks(roster_with_candidate, percentile_lookup)
     pid = candidate["player_id"]
     if pid in starter_ids:
         if pid in flex_ranks:
@@ -487,7 +497,10 @@ def _roster_aware_marginal_value(candidate: dict[str, Any], roster_with_candidat
 
 
 def _roster_aware_pick(
-    state: DraftState, players_by_id: dict[str, dict[str, Any]], candidate_breadth: int
+    state: DraftState,
+    players_by_id: dict[str, dict[str, Any]],
+    candidate_breadth: int,
+    percentile_lookup: dict[str, float],
 ) -> Optional[dict[str, Any]]:
     """
     Rollout continuation policy (see CHUNK 13 FIX above for why this
@@ -497,13 +510,16 @@ def _roster_aware_pick(
     value if it would start, rank-decayed bench value otherwise -- instead
     of just the highest league-wide-scarcity player regardless of whether
     my own roster actually still needs it.
+
+    `percentile_lookup` (CHUNK 39): threaded straight through to
+    `_roster_aware_marginal_value` -- see that function's own docstring.
     """
     candidates = _top_available_by_vbd(state, players_by_id, candidate_breadth)
     if not candidates:
         return None
     my_roster_ids = state.roster_player_ids()
     my_roster = [players_by_id[pid] for pid in my_roster_ids if pid in players_by_id]
-    return max(candidates, key=lambda c: _roster_aware_marginal_value(c, my_roster + [c]))
+    return max(candidates, key=lambda c: _roster_aware_marginal_value(c, my_roster + [c], percentile_lookup))
 
 
 def _run_iteration(
@@ -517,6 +533,7 @@ def _run_iteration(
     rollout_extra_picks: int,
     rollout_sim_count: int,
     risk_aversion: float,
+    percentile_lookup: dict[str, float],
 ) -> None:
     # SELECTION: descend via UCB1 (normalized, see _RewardStats) while fully expanded.
     node = root
@@ -559,7 +576,7 @@ def _run_iteration(
     for _ in range(rollout_extra_picks):
         if not rollout_state.is_my_turn or _draft_is_over(rollout_state):
             break
-        pick = _roster_aware_pick(rollout_state, players_by_id, candidate_breadth)
+        pick = _roster_aware_pick(rollout_state, players_by_id, candidate_breadth, percentile_lookup)
         if pick is None:
             break
         rollout_state.add_pick(pick["player_id"])
@@ -588,7 +605,8 @@ def _run_iteration(
     my_roster_ids = rollout_state.roster_player_ids()
     my_roster_players = [players_by_id[pid] for pid in my_roster_ids if pid in players_by_id]
     reward = evaluate_roster(
-        my_roster_players, risk_aversion=risk_aversion, num_sims=rollout_sim_count, seed=reward_seed
+        my_roster_players, risk_aversion=risk_aversion, num_sims=rollout_sim_count, seed=reward_seed,
+        percentile_lookup=percentile_lookup,
     )["risk_adjusted_score"]
 
     # BACKPROPAGATION
@@ -678,6 +696,7 @@ def _adaptively_resolve_tie(
     rollout_extra_picks: int,
     rollout_sim_count: int,
     risk_aversion: float,
+    percentile_lookup: dict[str, float],
     batch_size: int = ADAPTIVE_RESOLUTION_BATCH_SIZE,
     max_iterations: int = ADAPTIVE_RESOLUTION_MAX_ITERATIONS,
 ) -> tuple[dict[str, "_Node"], int]:
@@ -697,6 +716,11 @@ def _adaptively_resolve_tie(
     left to resolve further). Returns ({player_id: _Node}, iterations_used)
     so the caller can both read the sharper estimates AND report how much
     extra work this call actually did.
+
+    `percentile_lookup` (CHUNK 39): the same stable table `recommend()`
+    built once for its own main search -- threaded through unchanged so
+    this dedicated re-search uses the identical percentile reference
+    frame, not a fresh/inconsistent one.
     """
     root = _Node(draft_state, depth=0, player_id=None, parent=None, untried=list(tied_player_ids))
     reward_stats = _RewardStats()
@@ -707,6 +731,7 @@ def _adaptively_resolve_tie(
             _run_iteration(
                 root, reward_stats, players_by_id, adp_ranks, rng,
                 tree_depth, candidate_breadth, rollout_extra_picks, rollout_sim_count, risk_aversion,
+                percentile_lookup,
             )
         done += batch
 
@@ -757,6 +782,14 @@ def recommend(
     all_players = list(players_by_id.values())
     vbd_full = calculate_vbd(all_players, drafted_player_ids=draft_state.drafted_player_ids)
     vbd_by_player = {p["player_id"]: p for p in vbd_full}
+    # CHUNK 39: built ONCE per recommend() call, against the FULL player
+    # universe (not the remaining/undrafted pool -- see vbd.py's
+    # `compute_league_wide_percentiles` docstring) -- a stable percentile
+    # reference frame threaded through every rollout call site below, so a
+    # single roster's own tiny same-position pool never has to supply its
+    # own (degenerate-prone) percentile comparison. See vbd.py's module
+    # docstring CHUNK 39 FIX note.
+    percentile_lookup = compute_league_wide_percentiles(all_players)
     # CHUNK 21: real market ADP (projections.py's `market_adp`, Chunks
     # 17/18's FFC data reused) is now the primary "will this player still
     # be there next turn" signal the rollout's opponent sampling uses, with
@@ -785,6 +818,7 @@ def recommend(
             rollout_extra_picks,
             rollout_sim_count,
             risk_aversion,
+            percentile_lookup,
         )
 
     results = []
@@ -833,6 +867,7 @@ def recommend(
             resolved_children, adaptive_iterations_used = _adaptively_resolve_tie(
                 draft_state, players_by_id, adp_ranks, tied_pids, rng,
                 candidate_breadth, tree_depth, rollout_extra_picks, rollout_sim_count, risk_aversion,
+                percentile_lookup,
             )
             by_pid = {r["player_id"]: r for r in top_results}
             for pid, child in resolved_children.items():

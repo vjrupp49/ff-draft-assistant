@@ -135,6 +135,62 @@ different effects showed up:
     the follow-up planning chat on whether the roster-level degenerate
     n<=1 -> 100.0 percentile case needs its own follow-up fix. See the
     Chunk 38 report for the full evidence trail.
+
+CHUNK 39 CORRECTION (the roster-level degenerate-percentile follow-up fix
+Chunk 38 deferred: `_allocate_starters` now accepts an optional stable,
+externally-computed `percentile_lookup` table -- built ONCE per
+`recommend()` call against the FULL player universe via vbd.py's new
+`compute_league_wide_percentiles` -- instead of recomputing percentile
+from whatever tiny same-position pool happens to be on one roster in one
+rollout branch; see vbd.py's own CHUNK 39 FIX docstring note): directly
+confirmed the diagnosis first (not assumed) -- instrumenting a real
+`recommend()` call at pick 59 found 18.3% of all roster-level QB
+allocation calls during that single search hit the exact degenerate n=1
+case, and the fix is independently validated correct via controlled
+synthetic tests (see tests/_scratch_c39_step3_synthetic.py in the Chunk
+39 report). BUT its measured effect on THIS file's 6 traced real-draft-
+replay picks required real self-correction, twice, to report honestly:
+
+An in-process check first (mis-)read pick 59 as fixed (Flowers's raw
+mcts_score, 1736.7, IS now higher than Goff's, 1733.7) before a closer
+look at the ACTUAL post-tiebreak recommendation order caught that Goff
+still wins the FINAL recommendation regardless (a genuine near-tie, z~0.5,
+that engages Chunk 24's separate, pre-existing ADP-margin tiebreak, which
+promotes Goff on real-market-urgency grounds unrelated to roster fit --
+a distinct, narrower open question this chunk doesn't own or fix).
+
+Then, apparent flips at picks 79/82 (Tony Pollard -> Courtland Sutton)
+were INITIALLY attributed to this chunk's fix (a plausible-sounding
+story: stable percentile surfacing WR value more reliably). A rigorous
+`git stash` negative control -- running this exact test file against
+PURE, UNMODIFIED Chunk 38 code (this chunk's changes stashed out
+entirely), against TODAY's live data -- proved that story WRONG: picks
+79, 82, 39, AND 102 all show the EXACT SAME behavior under pure Chunk 38
+code as under this chunk's fix (Sutton wins 79/82, Kyren Williams
+resolves cleanly at 39, adaptive_resolution_applied is False at 102) --
+this chunk's code changes are not the cause. This project's projections/
+ADP data is live and updates over time (see projections.py/adp.py) --
+the real explanation is DATA DRIFT since Chunk 38's original pins were
+set in an earlier session, not any code change made here. Confirmed
+further: an in-process negative control (forcing `percentile_lookup=None`
+via monkeypatch, no git stash needed) at pick 59 ALSO produced BYTE-
+IDENTICAL scores to the fix-active run (1733.7/1736.7 either way) --
+this chunk's fix has NO measurable effect on pick 59's outcome at all,
+even though the mechanism it targets is real and independently confirmed.
+
+HONEST BOTTOM LINE for these 6 traced picks: the fix is correct and
+validated in isolation (synthetic tests, direct instrumentation showing
+it fires often in real rollouts), but produces ZERO measurable change to
+any of these 6 specific real-draft-replay outcomes -- pick 39's
+resolution and picks 79/82/102's current values are all data drift,
+present identically with or without this chunk's code; pick 59 remains
+unresolved (Goff still wins) with or without the fix. Re-pinned below to
+match TODAY's actual data-drift-affected behavior (needed regardless of
+this chunk, since the OLD Chunk-38-era pins no longer match live data
+under EITHER code version) -- explicitly documented as data drift, not a
+code-driven re-pin, the first time this file has needed that distinction.
+Pick 59 kept `xfail`, re-reasoned to reflect the fix's real (null) effect
+on this specific case rather than falsely claiming partial credit.
 """
 from __future__ import annotations
 
@@ -210,31 +266,24 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
     "pick_no,expected_top_name,expect_adaptive_applied,expect_adp_tie_break_applied",
     [
         pytest.param(
-            59, "Zay Flowers", True, False,
+            59, "Zay Flowers", True, True,
             marks=pytest.mark.xfail(
-                reason="CHUNK 38 OPEN FINDING: winner flips to Jared Goff (a 3rd elite QB, marginal "
-                       "starting value on top of Hurts/Jackson already rostered) -- root-caused to the "
-                       "percentile fix's roster-level rollout reward, not root-candidate/VBD selection "
-                       "(Goff was already #1 VBD before this chunk too). See module docstring's CHUNK 38 "
-                       "CORRECTION and the Chunk 38 report -- deliberately not re-pinned pending review.",
+                reason="CHUNK 39: this chunk's fix has NO measurable effect on this pick, confirmed via "
+                       "TWO independent negative controls (in-process monkeypatch AND git-stash to pure "
+                       "Chunk 38 code) -- Goff still wins, byte-identical scores (1733.7/1736.7) with or "
+                       "without the fix. Goff wins via Chunk 24's separate, pre-existing ADP-margin "
+                       "tiebreak on a genuine near-tie (z~0.5) -- not this chunk's mechanism, not fixed "
+                       "by this chunk, not this chunk's to fix. See module docstring's CHUNK 39 "
+                       "CORRECTION for the full, self-corrected evidence trail.",
                 strict=False,
             ),
-            id="59-Zay Flowers-True-False",
+            id="59-Zay Flowers-True-True",
         ),
-        (79, "Tony Pollard", True, False),    # CHUNK 38: adaptive resolution still engages and now resolves it alone -- ADP fallback no longer needed (see module docstring's CHUNK 38 CORRECTION)
-        pytest.param(
-            39, "Kyren Williams", True, False,
-            marks=pytest.mark.xfail(
-                reason="CHUNK 38 OPEN FINDING: same root cause as pick 59 above (winner flips to Jared "
-                       "Goff, a 3rd elite QB with marginal starting value) -- see module docstring's "
-                       "CHUNK 38 CORRECTION and the Chunk 38 report.",
-                strict=False,
-            ),
-            id="39-Kyren Williams-True-False",
-        ),
-        (82, "Tony Pollard", True, False),     # CHUNK 33: TE bench-discount fix flips the winner -- see module docstring
-        (102, "Matthew Stafford", True, True),  # CHUNK 38: adaptive resolution still engages, but now genuinely can't separate the leader from the pack on its own (old top8's 4-TE glut is gone, replaced by closer RB/QB competition) -- ADP fallback now fires where it didn't before, winner unchanged -- see module docstring's CHUNK 38 CORRECTION
-        (122, "Matthew Stafford", False, False),  # CHUNK 38: now resolves decisively after the base 150 iterations -- no near-tie left to trigger adaptive resolution at all -- see module docstring's CHUNK 38 CORRECTION
+        (79, "Courtland Sutton", True, False),  # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick behaves identically under pure Chunk 38 code today; the live projections/ADP data has simply moved since Chunk 38's original pins -- see module docstring's CHUNK 39 CORRECTION
+        (39, "Kyren Williams", True, False),   # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick ALSO resolves cleanly to Kyren Williams under pure Chunk 38 code today, unrelated to this chunk's fix -- see module docstring's CHUNK 39 CORRECTION
+        (82, "Courtland Sutton", False, False),  # DATA DRIFT, not code-driven -- same git-stash confirmation as pick 79 -- see module docstring's CHUNK 39 CORRECTION
+        (102, "Matthew Stafford", False, False),  # DATA DRIFT, not code-driven -- same git-stash confirmation -- see module docstring's CHUNK 39 CORRECTION
+        (122, "Matthew Stafford", False, False),  # CHUNK 38: still resolves decisively after the base 150 iterations -- unaffected by Chunk 39 -- see module docstring's CHUNK 38 CORRECTION
     ],
 )
 def test_adaptive_resolution_replay_matches_expected_behavior(
@@ -258,10 +307,15 @@ def test_adaptive_resolution_replay_matches_expected_behavior(
 
 
 @pytest.mark.xfail(
-    reason="CHUNK 38 OPEN FINDING: same root cause as pick 59 in the parametrized test above (Jared "
-           "Goff's 3rd-elite-QB branch now genuinely contests the lead for the full 600-iteration cap "
-           "instead of cleanly separating) -- see module docstring's CHUNK 38 CORRECTION. Deliberately "
-           "not re-pinned to a different pick pending review.",
+    reason="CHUNK 39: this chunk's fix has NO measurable effect on pick 59 (confirmed via two "
+           "independent negative controls -- see the parametrized test above and module docstring's "
+           "CHUNK 39 CORRECTION), so this is unchanged from Chunk 38: pick 59 is a genuine, narrow "
+           "near-tie by raw mcts_score (Zay Flowers 1736.7 vs Jared Goff 1733.7, combined stderr ~6.0, "
+           "z~0.5) that legitimately needs the full 600-iteration budget to even narrowly separate the "
+           "two by score -- not a broken early-stop mechanism, but pick 59 no longer demonstrates "
+           "EARLY-stopping specifically (the same reason Chunk 30 previously moved this test off pick "
+           "82). Finding a new pick that cleanly demonstrates early-stopping is out of this chunk's "
+           "narrow scope -- deferred.",
     strict=False,
 )
 def test_adaptive_resolution_can_stop_early_before_the_iteration_cap(

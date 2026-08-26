@@ -117,6 +117,55 @@ deliberately through Chunks 9/10/13) is untouched for genuinely elite or
 early-needed QBs; what changes is a MEDIOCRE QB no longer automatically
 outranking a genuinely-better-relative-to-its-position WR/RB/TE purely
 because QB's league-wide raw-point ceiling happens to be higher.
+
+CHUNK 39 FIX -- STABLE, EXTERNALLY-COMPUTED PERCENTILE FOR SINGLE-ROSTER
+CALLS, NOT RECOMPUTED FROM THAT ROSTER'S OWN TINY POOL: Chunk 38's
+percentile fix is exactly right for `compute_replacement_levels`'s
+league-wide call, whose `by_position` pool is the whole remaining
+league-wide talent pool (100+ players per position) -- no small-sample
+issue there. But `allocate_roster_starters_with_flex_ranks` (used by
+mcts.py's rollout reward, portfolio.py's `evaluate_roster`) reuses the
+SAME `_allocate_starters` core against a single roster's own tiny
+same-position pool (often just 1-2 players), and Chunk 38 left that
+call's percentile ALSO computed locally, from that same tiny pool.
+`_within_position_percentile` degenerates to 100.0 whenever only one
+same-position candidate remains to rank against (see its own docstring)
+-- correct when that candidate really is "the sole remaining option
+league-wide," meaningless when it's just "the only QB happening to
+appear in this one MCTS rollout branch's local roster snapshot right
+now." Directly confirmed this actually fires, not just hypothetically:
+instrumenting a real `recommend()` call at a Chunk-38-flagged decision
+point (pick 59, seed 1) found 18.3% of all roster-level QB allocation
+calls during that single search hit exactly this n=1 case. Combined with
+mcts.py's rollout continuation policy (`_roster_aware_pick`) picking
+whichever candidate scores highest via this same degenerate-prone
+function, a mediocre-but-only QB in a given rollout branch could look
+like a 100th-percentile "elite" starter purely from having no local
+same-position competition to rank against in that branch -- inflating
+that branch's simulated reward and letting an objectively marginal-value
+3rd QB (Jared Goff, Chunk 38's flagged picks 59/39) win MCTS's overall
+search despite an unchanged, un-inflated league-wide VBD rank.
+
+FIX: `_allocate_starters` now accepts an optional `percentile_lookup`
+override (see its own docstring) -- a stable {player_id: percentile}
+table computed ONCE per `recommend()` call by the new
+`compute_league_wide_percentiles()` against the FULL player universe
+(not the remaining/undrafted pool -- deliberately different from
+`compute_replacement_levels`'s own filtering, see that function's own
+docstring for why), threaded through every MCTS rollout call site
+(mcts.py's `_roster_aware_marginal_value`/`_roster_aware_pick`,
+portfolio.py's `evaluate_roster` when called from mcts.py's own reward
+computation). `compute_replacement_levels`'s league-wide call is
+UNCHANGED -- it never passes `percentile_lookup`, so its own local
+per-call computation (already correct, large-sample, Chunk-38-validated)
+is untouched, exactly as intended. Other, non-rollout callers of
+`evaluate_roster`/`allocate_roster_starters_with_flex_ranks` (the
+draft-score explanation panel, the portfolio API endpoint, shapley.py)
+are ALSO left on the old default (percentile_lookup=None) -- out of this
+chunk's scope (narrowly targeted at the MCTS search's own decision, not
+every display surface that reuses this allocation logic); the same
+small-sample effect likely still exists there too, flagged for a future
+chunk exactly the way Chunk 38 flagged Track B without touching it.
 """
 
 from __future__ import annotations
@@ -175,6 +224,7 @@ def _within_position_percentile(rank_within_position: int, n_at_position: int) -
 def _allocate_starters(
     by_position: dict[str, list[dict[str, Any]]],
     slot_needs: dict[str, int],
+    percentile_lookup: dict[str, float] | None = None,
 ) -> tuple[set[str], dict[str, int]]:
     """
     Shared starter-allocation core (see module docstring). `by_position`
@@ -189,6 +239,21 @@ def _allocate_starters(
     by QB eligibility -- see module docstring for why that must be one
     pass, not two) is identical either way; only the slot quantities
     differ.
+
+    `percentile_lookup` (CHUNK 39): optional {player_id: percentile}
+    override for step 2's within-position percentile ranking -- see
+    module docstring's CHUNK 39 FIX note. When omitted (the default),
+    behavior is byte-for-byte identical to Chunk 38: percentile is
+    computed locally from THIS call's own `by_position` pool, which is
+    exactly right for `compute_replacement_levels`'s league-wide call
+    (the pool IS the whole remaining league-wide talent pool -- hundreds
+    of players per position, nothing degenerate about it) but was found
+    to degenerate for `allocate_roster_starters_with_flex_ranks`'s
+    single-roster callers, whose own same-position pool is often just 1-2
+    players. When provided, every candidate's percentile is looked up
+    from this stable, externally-computed table instead of being
+    recomputed from the local (and for a single roster, often tiny/
+    unstable) `by_position` pool.
 
     Returns (started_ids, flex_rank_by_id):
       - started_ids: the set of player_ids that would occupy a starting slot.
@@ -226,13 +291,28 @@ def _allocate_starters(
     # already sorted descending by projected_points (this function's own
     # precondition), so a player's 1-indexed within-position rank is just
     # its index in that list.
+    #
+    # CHUNK 39: when `percentile_lookup` is supplied, use it instead of
+    # recomputing locally -- see this function's own CHUNK 39 note above
+    # and module docstring's CHUNK 39 FIX note. The `.get(..., 0.0)`
+    # fallback is a defensive safety net, not an expected path: every
+    # legitimate caller builds `percentile_lookup` from the SAME full
+    # player universe every candidate in `by_position` is drawn from, so a
+    # miss would mean a genuine caller bug, not normal operation -- 0.0
+    # (worst possible) rather than silently defaulting to a mid-pack value
+    # so a real miss fails loudly (an obviously-wrong ranking) instead of
+    # quietly blending in.
     combined_pool: list[dict] = []
     percentile_by_id: dict[str, float] = {}
     for pos in SUPER_FLEX_ELIGIBLE:  # QB, RB, WR, TE
         pos_remaining = remaining.get(pos, [])
-        n_at_position = len(pos_remaining)
-        for rank, p in enumerate(pos_remaining, start=1):
-            percentile_by_id[p["player_id"]] = _within_position_percentile(rank, n_at_position)
+        if percentile_lookup is None:
+            n_at_position = len(pos_remaining)
+            for rank, p in enumerate(pos_remaining, start=1):
+                percentile_by_id[p["player_id"]] = _within_position_percentile(rank, n_at_position)
+        else:
+            for p in pos_remaining:
+                percentile_by_id[p["player_id"]] = percentile_lookup.get(p["player_id"], 0.0)
         combined_pool.extend(pos_remaining)
     combined_pool.sort(key=lambda p: percentile_by_id[p["player_id"]], reverse=True)
 
@@ -313,7 +393,54 @@ def compute_replacement_levels(
     return replacement_levels
 
 
-def allocate_roster_starters(roster_players: Iterable[dict[str, Any]]) -> set[str]:
+def compute_league_wide_percentiles(projections: Iterable[dict[str, Any]]) -> dict[str, float]:
+    """
+    CHUNK 39: {player_id: percentile} for EVERY QB/RB/WR/TE in `projections`
+    (drafted or not -- see module docstring's CHUNK 39 FIX note for why
+    this deliberately does NOT filter by draft status), each player's
+    percentile computed within their own position's FULL universe using
+    the same rank-to-percentile mapping as `_within_position_percentile`.
+    This is the stable, externally-computed table `_allocate_starters`'s
+    `percentile_lookup` parameter is meant to be filled with for a single-
+    roster call -- a table this large (every fantasy-relevant player at a
+    position, not just whoever's currently on one team's roster) is never
+    at risk of the small-sample degenerate case (see `_within_position_
+    percentile`'s own docstring) that motivated this function.
+
+    Deliberately not filtered by drafted status: a single-roster caller
+    needs a percentile for EVERY player who might appear on that roster,
+    including the user's own already-drafted players -- who are, by
+    definition, no longer in any "remaining/undrafted" pool. Ranking
+    against the full universe instead sidesteps that entirely (nobody is
+    ever missing from this table) and is arguably the more correct
+    question anyway for this use ("how good is this player at their
+    position, period" rather than "...among what's still on the wire").
+    Intentionally UNRELATED to `compute_replacement_levels`'s own
+    drafted-filtered, remaining-pool-only percentile computation -- that
+    one is answering a genuinely different question (replacement level)
+    and stays exactly as Chunk 38 left it (see `_allocate_starters`'s
+    CHUNK 39 docstring note).
+    """
+    by_position: dict[str, list[dict]] = {pos: [] for pos in FANTASY_POSITIONS}
+    for p in projections:
+        pos = p.get("position")
+        if pos in by_position:
+            by_position[pos].append(p)
+    for pos in by_position:
+        by_position[pos].sort(key=lambda p: p["projected_points"], reverse=True)
+
+    percentile_by_id: dict[str, float] = {}
+    for pos, players in by_position.items():
+        n_at_position = len(players)
+        for rank, p in enumerate(players, start=1):
+            percentile_by_id[p["player_id"]] = _within_position_percentile(rank, n_at_position)
+    return percentile_by_id
+
+
+def allocate_roster_starters(
+    roster_players: Iterable[dict[str, Any]],
+    percentile_lookup: dict[str, float] | None = None,
+) -> set[str]:
     """
     Given a SINGLE roster (not the league-wide draft pool), returns the
     set of player_ids that would occupy one of THIS roster's own starting
@@ -328,13 +455,18 @@ def allocate_roster_starters(roster_players: Iterable[dict[str, Any]]) -> set[st
     (a mid-draft partial roster, or a thin bench), everyone eligible ends
     up started -- there's nobody left to be bench yet, which is the
     correct behavior for a roster still being built.
+
+    `percentile_lookup` (CHUNK 39): see `_allocate_starters`'s own
+    docstring -- passed straight through, optional, defaults to the old
+    Chunk 38 per-call local computation when omitted.
     """
-    started_ids, _flex_ranks = allocate_roster_starters_with_flex_ranks(roster_players)
+    started_ids, _flex_ranks = allocate_roster_starters_with_flex_ranks(roster_players, percentile_lookup)
     return started_ids
 
 
 def allocate_roster_starters_with_flex_ranks(
     roster_players: Iterable[dict[str, Any]],
+    percentile_lookup: dict[str, float] | None = None,
 ) -> tuple[set[str], dict[str, int]]:
     """
     Chunk 20: same allocation as `allocate_roster_starters`, but ALSO
@@ -347,6 +479,14 @@ def allocate_roster_starters_with_flex_ranks(
     changes -- only callers that actually need the new detail
     (portfolio.py, shapley.py, mcts.py's roster-aware rollout policy)
     call this one instead.
+
+    `percentile_lookup` (CHUNK 39): optional stable, externally-computed
+    {player_id: percentile} table (see `compute_league_wide_percentiles`)
+    -- passed straight through to `_allocate_starters`. Omitted (None) by
+    default, which preserves EXACT Chunk 38 behavior (percentile computed
+    locally from THIS roster's own small same-position pool) for any
+    caller not yet updated to supply one. See module docstring's CHUNK 39
+    FIX note for why MCTS's rollout callers now always pass one.
     """
     slot_counts = _slot_counts()
     roster_slot_needs = {pos: slot_counts.get(pos, 0) for pos in FANTASY_POSITIONS}
@@ -362,7 +502,7 @@ def allocate_roster_starters_with_flex_ranks(
     for pos in by_position:
         by_position[pos].sort(key=lambda p: p["projected_points"], reverse=True)
 
-    return _allocate_starters(by_position, roster_slot_needs)
+    return _allocate_starters(by_position, roster_slot_needs, percentile_lookup)
 
 
 def calculate_vbd(

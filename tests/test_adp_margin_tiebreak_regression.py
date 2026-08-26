@@ -183,13 +183,29 @@ def test_all_unmatched_tied_candidates_falls_back_to_existing_ranking_unchanged(
 # Removed from this parametrize list rather than repinned to a winner this
 # test can't actually demonstrate; pick 79 remains genuinely tied and
 # still exercises the tie-break directly.
+#
+# CHUNK 39 CORRECTION: pick 79 now ALSO fails this criterion -- confirmed
+# directly (test_adaptive_resolution_regression.py's own recommend() call
+# at this same pick shows `adp_tie_break_applied=False` now, top name
+# Courtland Sutton, resolved via adaptive resolution ALONE). Root-caused
+# via git-stash negative control (see that file's CHUNK 39 CORRECTION) to
+# be live-data drift since this project's projections/ADP data updates
+# over time, not any Chunk 39 code change -- confirmed identical under
+# pure, unmodified Chunk 38 code run against today's data. Removed from
+# this parametrize list for the exact same reason pick 39 was above (no
+# longer exercises the ADP-margin tie-break specifically, whatever name
+# it's repinned to) rather than repinned to a winner this test can't
+# actually demonstrate. This leaves this specific real-data parametrize
+# empty -- the MECHANISM itself remains fully covered by this file's
+# synthetic unit tests above (data-independent, unaffected by drift);
+# only the "does it fire at a real historical decision point" guard is
+# currently unstaffed, flagged for a future chunk to find a new real pick
+# that still demonstrates it, not fixed here (out of this chunk's scope).
 # ---------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "pick_no,expected_top_name",
-    [
-        (79, "Tony Pollard"),   # real ADP 83.3, margin +1.3 to next turn (82) -- tightest of the genuinely-tied set
-    ],
+    [],
 )
 def test_tie_break_promotes_the_at_risk_candidate_at_real_decision_points(
     pick_no: int, expected_top_name: str, players_by_id: dict[str, dict[str, Any]]

@@ -410,6 +410,7 @@ def evaluate_roster(
     bench_discount_base: Optional[dict[str, float]] = None,
     bench_discount_decay: Optional[dict[str, float]] = None,
     seed: Optional[int] = None,
+    percentile_lookup: Optional[dict[str, float]] = None,
 ) -> dict[str, Any]:
     """
     Risk-adjusted value of a candidate roster: mean simulated season
@@ -421,6 +422,15 @@ def evaluate_roster(
     the same position (see CHUNK 10 FIX). Starters/bench are determined by
     app.services.vbd.allocate_roster_starters against this league's actual
     SUPER_FLEX/FLEX roster structure.
+
+    `percentile_lookup` (CHUNK 39): optional stable, externally-computed
+    {player_id: percentile} table (see vbd.py's `compute_league_wide_
+    percentiles`), passed straight through to `allocate_roster_starters_
+    with_flex_ranks`. Omitted (None) by default -- mcts.py's rollout
+    reward computation supplies one; other callers (draft-score
+    explanation panel, the portfolio API endpoint, shapley.py) are
+    unaffected and keep the old Chunk-38 local-computation behavior. See
+    vbd.py's module docstring CHUNK 39 FIX note for why.
 
     Returns the risk-adjusted score plus the full mean/variance/covariance
     breakdown (including each player's starter/bench status, rank, and the
@@ -445,7 +455,7 @@ def evaluate_roster(
 
     base_by_position = bench_discount_base or BENCH_DISCOUNT_BASE
     decay_by_position = bench_discount_decay or BENCH_DISCOUNT_DECAY
-    starter_ids, flex_ranks = allocate_roster_starters_with_flex_ranks(roster_players)
+    starter_ids, flex_ranks = allocate_roster_starters_with_flex_ranks(roster_players, percentile_lookup)
 
     per_player_totals = simulate_players(roster_players, num_sims=num_sims, seed=seed)
     player_ids = [p["player_id"] for p in roster_players]
