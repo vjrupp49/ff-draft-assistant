@@ -32,6 +32,13 @@ easy to sanity-check.
 Draft date and draft order are not yet set by the league and are
 intentionally left as `None` in config rather than given placeholder values.
 
+## Project history
+
+Chunk-by-chunk build history and current open items: see
+[`docs/handoff/`](docs/handoff/README.md) — start with `V4_chunks_31-.md`
+(the living doc) for current state, or `V1_chunks_1-10.md` for the working
+model this project uses.
+
 ## Setup
 
 ```bash
