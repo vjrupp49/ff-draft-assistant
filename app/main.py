@@ -30,6 +30,7 @@ from app.routers.shapley import router as shapley_router
 from app.routers.simulate import router as simulate_router
 from app.routers.targets import router as targets_router
 from app.routers.trade import router as trade_router
+from app.routers.waivers import router as waivers_router
 from app.services.sleeper import SleeperAPIError, sleeper_client
 
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +51,7 @@ app.include_router(outlook_router)  # CHUNK 54 -- planning/browsing, "likely ava
 app.include_router(lineup_router)  # CHUNK 55 -- planning/browsing, Start/Bench Lineup Optimizer
 app.include_router(rosters_router)  # CHUNK 56 -- planning/browsing, roster browser
 app.include_router(trade_router)  # CHUNK 56 -- planning/browsing, Trade Suggester skeleton
+app.include_router(waivers_router)  # CHUNK 57 -- planning/browsing, Waiver/Free Agency Suggester skeleton
 
 
 @app.get("/")

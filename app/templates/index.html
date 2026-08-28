@@ -20,6 +20,7 @@
       <button class="nav-tab" data-section="rankings">Draft Outlook</button>
       <button class="nav-tab" data-section="lineup">Lineup</button>
       <button class="nav-tab" data-section="trade">Trade</button>
+      <button class="nav-tab" data-section="waivers">Free Agents</button>
     </div>
     <div class="app-nav-league">
       <span class="app-nav-league-label">League</span>
@@ -339,6 +340,50 @@
           <div class="trade-differential" id="trade-differential-text"></div>
           <div class="outlook-subnote" id="trade-method-note"></div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FREE AGENTS SECTION (planning/browsing) -- Chunk 57: Waiver/Free
+       Agency Suggester SKELETON. A simple raw-VBD ranking of unrostered
+       players, reusing Chunk 56's roster-read infrastructure for
+       availability and calculate_vbd for ranking -- explicitly NOT
+       roster-need-aware (see app/routers/waivers.py's module docstring). -->
+  <section id="section-waivers" class="app-section hidden">
+    <div class="rankings-wrap">
+      <header class="rankings-head">
+        <div>
+          <div class="setup-kicker" id="waivers-league-kicker">KIDDOS LEAGUE · FREE AGENTS</div>
+          <h1 class="rankings-title">Who's still out there?</h1>
+        </div>
+        <div class="rankings-filters" id="waivers-pos-filters">
+          <button class="waivers-pos-filter-btn active" data-pos="">ALL</button>
+          <button class="waivers-pos-filter-btn" data-pos="QB">QB</button>
+          <button class="waivers-pos-filter-btn" data-pos="RB">RB</button>
+          <button class="waivers-pos-filter-btn" data-pos="WR">WR</button>
+          <button class="waivers-pos-filter-btn" data-pos="TE">TE</button>
+        </div>
+      </header>
+
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">MY ROSTER, FOR CONTEXT</span>
+          <span class="outlook-block-tag outlook-tag-approx">PASSIVE ONLY -- NOT USED TO RANK</span>
+        </div>
+        <div class="outlook-subnote" id="waivers-my-roster-note">Loading…</div>
+      </div>
+
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">AVAILABLE FREE AGENTS</span>
+          <span class="outlook-block-tag outlook-tag-approx">RAW VALUE ONLY</span>
+        </div>
+        <div class="outlook-subnote">Ranked by raw VBD -- the same computation as the Draft Outlook's full board. Not aware of what your roster is thin at; browse and judge for yourself.</div>
+        <div id="waivers-error" class="setup-error hidden"></div>
+        <div id="waivers-note" class="outlook-subnote hidden"></div>
+        <ol id="waivers-list" class="rankings-list">
+          <li class="alt-empty">Loading…</li>
+        </ol>
       </div>
     </div>
   </section>

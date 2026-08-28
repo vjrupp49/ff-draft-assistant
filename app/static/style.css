@@ -153,7 +153,7 @@
   gap: 0.35rem;
 }
 
-.pos-filter-btn {
+.pos-filter-btn, .waivers-pos-filter-btn {
   background: var(--bg-1);
   border: 1px solid var(--panel-border);
   color: var(--text-mid);
@@ -164,7 +164,7 @@
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.pos-filter-btn.active {
+.pos-filter-btn.active, .waivers-pos-filter-btn.active {
   background: rgba(33, 230, 161, 0.12);
   border-color: var(--go);
   color: var(--go);

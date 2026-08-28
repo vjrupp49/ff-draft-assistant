@@ -12,6 +12,7 @@
   var sectionRankings = document.getElementById("section-rankings");
   var sectionLineup = document.getElementById("section-lineup");
   var sectionTrade = document.getElementById("section-trade");
+  var sectionWaivers = document.getElementById("section-waivers");
   var leagueButtons = document.querySelectorAll(".league-btn");
   var posFilterButtons = document.querySelectorAll(".pos-filter-btn");
   var rankingsList = document.getElementById("rankings-list");
@@ -59,6 +60,14 @@
   var tradeDifferentialText = document.getElementById("trade-differential-text");
   var tradeMethodNote = document.getElementById("trade-method-note");
 
+  // CHUNK 57 -- Waiver/Free Agency Suggester skeleton refs
+  var waiversLeagueKicker = document.getElementById("waivers-league-kicker");
+  var waiversPosFilterButtons = document.querySelectorAll(".waivers-pos-filter-btn");
+  var waiversMyRosterNote = document.getElementById("waivers-my-roster-note");
+  var waiversError = document.getElementById("waivers-error");
+  var waiversNote = document.getElementById("waivers-note");
+  var waiversList = document.getElementById("waivers-list");
+
   var LEAGUE_NAMES = { kiddos: "KIDDOS", former_bradley_bums: "FORMER BRADLEY BUMS" };
   var selectedLeagueKey = "kiddos";
   var selectedPosFilter = "";
@@ -68,6 +77,7 @@
   var lineupPlayersCache = null; // full /api/rankings player list, cached for the search box (shared by Lineup AND Trade)
   var lineupRoster = []; // ordered list of {player_id, name, position, team} the user has added
   var tradeRostersData = null; // last /api/rosters response for the CURRENT selectedLeagueKey
+  var selectedWaiversPosFilter = "";
   var tradeSides = { a: [], b: [] }; // ordered lists of {player_id, name, position, team}
 
   navTabs.forEach(function (tab) {
@@ -79,6 +89,7 @@
       sectionRankings.classList.toggle("hidden", section !== "rankings");
       sectionLineup.classList.toggle("hidden", section !== "lineup");
       sectionTrade.classList.toggle("hidden", section !== "trade");
+      sectionWaivers.classList.toggle("hidden", section !== "waivers");
       if (section === "rankings") {
         loadOutlook();
       } else if (section === "lineup") {
@@ -86,6 +97,9 @@
       } else if (section === "trade") {
         tradeLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · ROSTERS & TRADE";
         loadRosterBrowser();
+      } else if (section === "waivers") {
+        waiversLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · FREE AGENTS";
+        loadWaivers();
       }
     });
   });
@@ -128,6 +142,11 @@
       tradeLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · ROSTERS & TRADE";
       tradeRostersData = null;
       if (!sectionTrade.classList.contains("hidden")) loadRosterBrowser();
+
+      // Free Agents tab (Chunk 57): availability is genuinely per-league
+      // (different rosters), so reload if visible.
+      waiversLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · FREE AGENTS";
+      if (!sectionWaivers.classList.contains("hidden")) loadWaivers();
     });
   });
 
@@ -137,6 +156,15 @@
       btn.classList.add("active");
       selectedPosFilter = btn.dataset.pos || "";
       fetchRankings();
+    });
+  });
+
+  waiversPosFilterButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      waiversPosFilterButtons.forEach(function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      selectedWaiversPosFilter = btn.dataset.pos || "";
+      loadWaivers();
     });
   });
 
@@ -751,6 +779,72 @@
         tradeResult.classList.add("hidden");
       });
   });
+
+  // ---- Waiver/Free Agency Suggester SKELETON (Chunk 57, app/routers/waivers.py) --
+  // Simple raw-VBD ranking of unrostered players -- explicitly NOT
+  // roster-need-aware. Reuses Chunk 56's roster-read infrastructure
+  // server-side; this is display-only client code.
+
+  function loadWaivers() {
+    waiversError.classList.add("hidden");
+    waiversNote.classList.add("hidden");
+    waiversMyRosterNote.textContent = "Loading…";
+    waiversList.innerHTML = '<li class="alt-empty">Loading…</li>';
+    var requestedLeagueKey = selectedLeagueKey; // see fetchSurvival's stale-response note (Chunk 54) -- same pattern
+    var params = new URLSearchParams({ league_key: requestedLeagueKey });
+    if (selectedWaiversPosFilter) params.set("position", selectedWaiversPosFilter);
+    fetch("/api/waivers/available?" + params.toString())
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        renderMyRosterContext(data);
+        renderWaiversList(data.available_players || [], data.total_rostered_players);
+      })
+      .catch(function (err) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        waiversError.textContent = err.message || "Could not load free agents.";
+        waiversError.classList.remove("hidden");
+        waiversList.innerHTML = "";
+      });
+  }
+
+  function renderMyRosterContext(data) {
+    var counts = data.my_roster_position_counts || {};
+    var parts = ["QB", "RB", "WR", "TE"].map(function (pos) { return pos + ": " + (counts[pos] || 0); });
+    waiversMyRosterNote.textContent =
+      "Your roster (" + data.my_roster_size + " players) -- " + parts.join(" · ") +
+      ". Shown for reference only -- not used to rank or filter free agents below.";
+  }
+
+  function renderWaiversList(players, totalRostered) {
+    if (totalRostered === 0) {
+      // Both real leagues are pre_draft as of Chunk 57 -- essentially the
+      // WHOLE player pool shows as "available" right now. Expected,
+      // correct behavior, not an error -- surfaced explicitly rather
+      // than silently dumping ~1000 rows with no context.
+      waiversNote.textContent = "No one has drafted yet in this league, so essentially the entire player pool is technically \"available.\" This list becomes genuinely useful once a draft happens and rosters fill in.";
+      waiversNote.classList.remove("hidden");
+    }
+    if (!players.length) {
+      waiversList.innerHTML = '<li class="alt-empty">No available players match this filter.</li>';
+      return;
+    }
+    waiversList.innerHTML = players.slice(0, 60).map(function (p) {
+      var injuryBadge = p.injury_status ? '<span class="injury-badge">' + escapeHtmlTop(p.injury_status) + "</span>" : "";
+      return (
+        '<li class="ranking-row">' +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<span class="ranking-vbd">' + Math.round(p.vbd).toLocaleString() + "</span>" +
+        injuryBadge +
+        "</li>"
+      );
+    }).join("");
+  }
 
   function escapeHtmlTop(str) {
     var div = document.createElement("div");
