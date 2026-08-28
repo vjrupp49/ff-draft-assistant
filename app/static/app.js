@@ -13,6 +13,7 @@
   var sectionLineup = document.getElementById("section-lineup");
   var sectionTrade = document.getElementById("section-trade");
   var sectionWaivers = document.getElementById("section-waivers");
+  var sectionDashboard = document.getElementById("section-dashboard");
   var leagueButtons = document.querySelectorAll(".league-btn");
   var posFilterButtons = document.querySelectorAll(".pos-filter-btn");
   var rankingsList = document.getElementById("rankings-list");
@@ -68,10 +69,22 @@
   var waiversNote = document.getElementById("waivers-note");
   var waiversList = document.getElementById("waivers-list");
 
+  // CHUNK 58 -- League Dashboard refs
+  var dashboardLeagueKicker = document.getElementById("dashboard-league-kicker");
+  var powerRankingsModeTag = document.getElementById("power-rankings-mode-tag");
+  var powerRankingsDemoBtn = document.getElementById("power-rankings-demo-btn");
+  var powerRankingsRealBtn = document.getElementById("power-rankings-real-btn");
+  var powerRankingsDemoBanner = document.getElementById("power-rankings-demo-banner");
+  var powerRankingsError = document.getElementById("power-rankings-error");
+  var powerRankingsList = document.getElementById("power-rankings-list");
+  var transactionsError = document.getElementById("transactions-error");
+  var transactionsList = document.getElementById("transactions-list");
+
   var LEAGUE_NAMES = { kiddos: "KIDDOS", former_bradley_bums: "FORMER BRADLEY BUMS" };
   var selectedLeagueKey = "kiddos";
   var selectedPosFilter = "";
   var rankingsLoadedOnce = false;
+  var showingDemoRankings = false;
   var targetedIds = {}; // player_id -> true, for the CURRENT selectedLeagueKey only
   var lastSurvivalPickNo = null;
   var lineupPlayersCache = null; // full /api/rankings player list, cached for the search box (shared by Lineup AND Trade)
@@ -90,6 +103,7 @@
       sectionLineup.classList.toggle("hidden", section !== "lineup");
       sectionTrade.classList.toggle("hidden", section !== "trade");
       sectionWaivers.classList.toggle("hidden", section !== "waivers");
+      sectionDashboard.classList.toggle("hidden", section !== "dashboard");
       if (section === "rankings") {
         loadOutlook();
       } else if (section === "lineup") {
@@ -100,6 +114,10 @@
       } else if (section === "waivers") {
         waiversLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · FREE AGENTS";
         loadWaivers();
+      } else if (section === "dashboard") {
+        dashboardLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · DASHBOARD";
+        loadPowerRankings();
+        loadTransactions();
       }
     });
   });
@@ -147,6 +165,22 @@
       // (different rosters), so reload if visible.
       waiversLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · FREE AGENTS";
       if (!sectionWaivers.classList.contains("hidden")) loadWaivers();
+
+      // League Dashboard tab (Chunk 58): genuinely per-league data
+      // (rosters, transaction history) -- reload if visible. Demo mode
+      // is NOT league-specific data (it's the same fixed synthetic
+      // roster set regardless), so switching leagues doesn't need to
+      // touch it, but drop back to the real view for clarity.
+      dashboardLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · DASHBOARD";
+      showingDemoRankings = false;
+      powerRankingsDemoBanner.classList.add("hidden");
+      powerRankingsDemoBtn.classList.remove("hidden");
+      powerRankingsRealBtn.classList.add("hidden");
+      powerRankingsModeTag.textContent = "REAL LEAGUE";
+      if (!sectionDashboard.classList.contains("hidden")) {
+        loadPowerRankings();
+        loadTransactions();
+      }
     });
   });
 
@@ -841,6 +875,120 @@
         '<span class="ranking-team">' + (p.team || "") + "</span>" +
         '<span class="ranking-vbd">' + Math.round(p.vbd).toLocaleString() + "</span>" +
         injuryBadge +
+        "</li>"
+      );
+    }).join("");
+  }
+
+  // ---- League Dashboard (Chunk 58, app/routers/dashboard.py) ----
+  // Two real components only: Power Rankings (portfolio.evaluate_roster
+  // across every roster) and a real Sleeper transactions feed. NO
+  // standings anywhere here -- see the static note in the HTML instead.
+
+  powerRankingsDemoBtn.addEventListener("click", function () {
+    showingDemoRankings = true;
+    powerRankingsDemoBanner.classList.remove("hidden");
+    powerRankingsDemoBtn.classList.add("hidden");
+    powerRankingsRealBtn.classList.remove("hidden");
+    powerRankingsModeTag.textContent = "DEMO DATA";
+    powerRankingsModeTag.className = "outlook-block-tag outlook-tag-approx";
+    loadPowerRankings();
+  });
+
+  powerRankingsRealBtn.addEventListener("click", function () {
+    showingDemoRankings = false;
+    powerRankingsDemoBanner.classList.add("hidden");
+    powerRankingsDemoBtn.classList.remove("hidden");
+    powerRankingsRealBtn.classList.add("hidden");
+    powerRankingsModeTag.textContent = "REAL LEAGUE";
+    powerRankingsModeTag.className = "outlook-block-tag outlook-tag-real";
+    loadPowerRankings();
+  });
+
+  function loadPowerRankings() {
+    powerRankingsError.classList.add("hidden");
+    powerRankingsList.innerHTML = '<li class="alt-empty">Loading…</li>';
+    var requestedLeagueKey = selectedLeagueKey; // see fetchSurvival's stale-response note (Chunk 54) -- same pattern
+    var requestedDemo = showingDemoRankings;
+    var path = requestedDemo ? "/api/dashboard/power-rankings/demo" : "/api/dashboard/power-rankings";
+    var params = new URLSearchParams({ league_key: requestedLeagueKey });
+    fetch(path + "?" + params.toString())
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        if (requestedLeagueKey !== selectedLeagueKey || requestedDemo !== showingDemoRankings) return; // stale
+        renderPowerRankings(data.rankings || []);
+      })
+      .catch(function (err) {
+        if (requestedLeagueKey !== selectedLeagueKey || requestedDemo !== showingDemoRankings) return;
+        powerRankingsError.textContent = err.message || "Could not load power rankings.";
+        powerRankingsError.classList.remove("hidden");
+        powerRankingsList.innerHTML = "";
+      });
+  }
+
+  function renderPowerRankings(rankings) {
+    if (!rankings.length) {
+      powerRankingsList.innerHTML = '<li class="alt-empty">No rosters found.</li>';
+      return;
+    }
+    powerRankingsList.innerHTML = rankings.map(function (r) {
+      var mineBadge = r.is_mine ? '<span class="mine-badge">YOU</span>' : "";
+      return (
+        '<li class="ranking-row">' +
+        '<span class="rank-badge">#' + r.rank + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(r.team_name) + "</span>" +
+        '<span class="ranking-team">' + r.roster_size + " players</span>" +
+        '<span class="ranking-score">' + Math.round(r.risk_adjusted_score).toLocaleString() + "</span>" +
+        mineBadge +
+        "</li>"
+      );
+    }).join("");
+  }
+
+  function loadTransactions() {
+    transactionsError.classList.add("hidden");
+    transactionsList.innerHTML = '<li class="alt-empty">Loading…</li>';
+    var requestedLeagueKey = selectedLeagueKey;
+    var params = new URLSearchParams({ league_key: requestedLeagueKey });
+    fetch("/api/dashboard/transactions?" + params.toString())
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        renderTransactions(data.transactions || []);
+      })
+      .catch(function (err) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        transactionsError.textContent = err.message || "Could not load transactions.";
+        transactionsError.classList.remove("hidden");
+        transactionsList.innerHTML = "";
+      });
+  }
+
+  function renderTransactions(transactions) {
+    if (!transactions.length) {
+      // Expected pre-draft: no waiver claims, trades, or free-agent moves
+      // are possible before a league has even drafted. Correct, not a bug.
+      transactionsList.innerHTML = '<li class="alt-empty">No transactions yet -- expected before a draft has happened.</li>';
+      return;
+    }
+    transactionsList.innerHTML = transactions.map(function (tx) {
+      var addNames = (tx.adds || []).map(function (a) { return a.name; });
+      var dropNames = (tx.drops || []).map(function (d) { return d.name; });
+      var detailParts = [];
+      if (addNames.length) detailParts.push('<span class="tx-add">+' + escapeHtmlTop(addNames.join(", ")) + "</span>");
+      if (dropNames.length) detailParts.push('<span class="tx-drop">-' + escapeHtmlTop(dropNames.join(", ")) + "</span>");
+      if (tx.waiver_bid != null) detailParts.push("$" + tx.waiver_bid + " waiver bid");
+      var detail = detailParts.length ? detailParts.join(" &middot; ") : (tx.team_names || []).join(" ↔ ");
+      return (
+        '<li class="ranking-row">' +
+        '<span class="tx-type-badge">' + escapeHtmlTop(tx.type || "?") + "</span>" +
+        '<span class="tx-detail">' + detail + "</span>" +
         "</li>"
       );
     }).join("");

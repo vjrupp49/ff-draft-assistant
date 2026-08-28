@@ -975,3 +975,56 @@ html, body {
   30%  { transform: scale(1.08); }
   100% { transform: scale(1); }
 }
+
+/* ---------------- League Dashboard additions (Chunk 58) ---------------- */
+
+.demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(255, 176, 32, 0.14);
+  border: 1px solid var(--recalc);
+  color: var(--recalc);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin-bottom: 0.9rem;
+  line-height: 1.4;
+}
+.demo-banner-icon { font-size: 1rem; flex-shrink: 0; }
+
+.rank-badge {
+  color: var(--text-lo);
+  font-weight: 800;
+  font-size: 0.85rem;
+  width: 1.8rem;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.tx-type-badge {
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  background: rgba(154, 163, 189, 0.15);
+  color: var(--text-mid);
+  border: 1px solid var(--panel-border);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.tx-detail {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  color: var(--text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tx-detail .tx-add { color: var(--go); font-weight: 700; }
+.tx-detail .tx-drop { color: var(--danger); font-weight: 700; }

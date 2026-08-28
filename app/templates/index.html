@@ -21,6 +21,7 @@
       <button class="nav-tab" data-section="lineup">Lineup</button>
       <button class="nav-tab" data-section="trade">Trade</button>
       <button class="nav-tab" data-section="waivers">Free Agents</button>
+      <button class="nav-tab" data-section="dashboard">League Dashboard</button>
     </div>
     <div class="app-nav-league">
       <span class="app-nav-league-label">League</span>
@@ -382,6 +383,60 @@
         <div id="waivers-error" class="setup-error hidden"></div>
         <div id="waivers-note" class="outlook-subnote hidden"></div>
         <ol id="waivers-list" class="rankings-list">
+          <li class="alt-empty">Loading…</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- LEAGUE DASHBOARD SECTION (planning/browsing) -- Chunk 58: a real
+       transactions feed + Power Rankings (portfolio.evaluate_roster
+       across every roster, the same engine validated since Chunk 5).
+       Deliberately NOT standings/best-team/best-draft -- those would be
+       fake placeholders before any games are played. See
+       app/routers/dashboard.py's module docstring. -->
+  <section id="section-dashboard" class="app-section hidden">
+    <div class="rankings-wrap">
+      <header class="rankings-head">
+        <div>
+          <div class="setup-kicker" id="dashboard-league-kicker">KIDDOS LEAGUE · DASHBOARD</div>
+          <h1 class="rankings-title">The state of the league.</h1>
+        </div>
+      </header>
+
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">STANDINGS</span>
+        </div>
+        <div class="outlook-subnote">Not available until games are actually played -- neither league has played a single game yet, so there is genuinely nothing real to show here. Not a bug, not something missing -- a fabricated number would be worse than this note.</div>
+      </div>
+
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">POWER RANKINGS</span>
+          <span class="outlook-block-tag outlook-tag-real" id="power-rankings-mode-tag">REAL LEAGUE</span>
+        </div>
+        <div class="outlook-subnote">Every roster in the league, scored by the same risk-adjusted engine (portfolio.evaluate_roster) validated since Chunk 5. Both leagues are pre-draft -- expect every team tied at 0 until a real draft happens.</div>
+        <div class="lineup-actions-row">
+          <button id="power-rankings-demo-btn" class="ghost-btn" type="button">Preview with demo data</button>
+          <button id="power-rankings-real-btn" class="ghost-btn hidden" type="button">Back to real league</button>
+        </div>
+        <div id="power-rankings-demo-banner" class="demo-banner hidden">
+          <span class="demo-banner-icon">⚠</span> DEMO / SYNTHETIC DATA -- NOT your real league. This previews what Power Rankings looks like using a completed mock draft (Chunk 40/41 artifact), not real Sleeper data.
+        </div>
+        <div id="power-rankings-error" class="setup-error hidden"></div>
+        <ol id="power-rankings-list" class="rankings-list">
+          <li class="alt-empty">Loading…</li>
+        </ol>
+      </div>
+
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">TRANSACTIONS</span>
+        </div>
+        <div class="outlook-subnote">Real Sleeper transaction history (waiver claims, trades, adds/drops) -- no modeling, just display. Both leagues are pre-draft, so this will likely be sparse or empty right now; that's correct, real behavior.</div>
+        <div id="transactions-error" class="setup-error hidden"></div>
+        <ol id="transactions-list" class="rankings-list">
           <li class="alt-empty">Loading…</li>
         </ol>
       </div>

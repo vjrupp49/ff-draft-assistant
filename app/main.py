@@ -18,6 +18,7 @@ from app.config import (
     SLEEPER_DRAFT_ID,
     SLEEPER_LEAGUE_ID,
 )
+from app.routers.dashboard import router as dashboard_router
 from app.routers.draft_score import router as draft_score_router
 from app.routers.lineup import router as lineup_router
 from app.routers.live import router as live_router
@@ -52,6 +53,7 @@ app.include_router(lineup_router)  # CHUNK 55 -- planning/browsing, Start/Bench 
 app.include_router(rosters_router)  # CHUNK 56 -- planning/browsing, roster browser
 app.include_router(trade_router)  # CHUNK 56 -- planning/browsing, Trade Suggester skeleton
 app.include_router(waivers_router)  # CHUNK 57 -- planning/browsing, Waiver/Free Agency Suggester skeleton
+app.include_router(dashboard_router)  # CHUNK 58 -- planning/browsing, League Dashboard (transactions + power rankings)
 
 
 @app.get("/")

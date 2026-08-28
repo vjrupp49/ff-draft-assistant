@@ -71,6 +71,19 @@ class SleeperClient:
         """All users (managers) in the league."""
         return await self._get(f"/league/{league_id}/users")
 
+    async def get_transactions(self, league_id: str, round_: int) -> list[dict[str, Any]]:
+        """
+        CHUNK 58: waiver claims, trades, and free-agent adds/drops for one
+        `round_` (Sleeper's term for week -- round 0 covers pre-season/
+        pre-Week-1 moves). Sleeper's API is per-round, not "all history in
+        one call" -- app/routers/dashboard.py fetches a small fixed set of
+        rounds and merges them (see that module for why, given this app
+        has no NFL schedule/current-week data to know how many rounds
+        actually matter yet -- see Chunk 55's bye-week scoping note for
+        the same underlying gap).
+        """
+        return await self._get(f"/league/{league_id}/transactions/{round_}")
+
     # --- Draft ---------------------------------------------------------
 
     async def get_draft(self, draft_id: str) -> dict[str, Any]:
