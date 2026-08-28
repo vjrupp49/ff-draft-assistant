@@ -426,6 +426,14 @@ async def build_baseline_projections(force_refresh: bool = False) -> dict[str, A
             "name": p.get("full_name"),
             "position": position,
             "team": p.get("team"),
+            # CHUNK 55: Sleeper's cached player record already carries a
+            # real, currently-populated injury_status (Questionable/
+            # Doubtful/Out/IR/PUP/etc) -- this was sitting unused. Not
+            # blended into projected_points (this project's "no invented
+            # weighted averages" principle -- see draft_score.py's module
+            # docstring); surfaced as-is for the Lineup Optimizer
+            # (app/routers/lineup.py) to display next to the real number.
+            "injury_status": p.get("injury_status"),
         }
 
         if hist:

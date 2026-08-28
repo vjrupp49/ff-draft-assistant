@@ -10,6 +10,7 @@
   var navTabs = document.querySelectorAll(".nav-tab");
   var sectionLive = document.getElementById("section-live");
   var sectionRankings = document.getElementById("section-rankings");
+  var sectionLineup = document.getElementById("section-lineup");
   var leagueButtons = document.querySelectorAll(".league-btn");
   var posFilterButtons = document.querySelectorAll(".pos-filter-btn");
   var rankingsList = document.getElementById("rankings-list");
@@ -23,12 +24,31 @@
   var survivalList = document.getElementById("survival-list");
   var survivalError = document.getElementById("survival-error");
 
+  // CHUNK 55 -- Lineup Optimizer refs
+  var lineupLeagueKicker = document.getElementById("lineup-league-kicker");
+  var lineupSearchInput = document.getElementById("lineup-search-input");
+  var lineupSearchResults = document.getElementById("lineup-search-results");
+  var lineupRosterList = document.getElementById("lineup-roster-list");
+  var lineupRosterCount = document.getElementById("lineup-roster-count");
+  var lineupOptimizeBtn = document.getElementById("lineup-optimize-btn");
+  var lineupClearBtn = document.getElementById("lineup-clear-btn");
+  var lineupRosterIdInput = document.getElementById("lineup-roster-id-input");
+  var lineupLoadLiveBtn = document.getElementById("lineup-load-live-btn");
+  var lineupError = document.getElementById("lineup-error");
+  var lineupNote = document.getElementById("lineup-note");
+  var lineupResultsBlock = document.getElementById("lineup-results-block");
+  var lineupBenchBlock = document.getElementById("lineup-bench-block");
+  var lineupStartersList = document.getElementById("lineup-starters-list");
+  var lineupBenchList = document.getElementById("lineup-bench-list");
+
   var LEAGUE_NAMES = { kiddos: "KIDDOS", former_bradley_bums: "FORMER BRADLEY BUMS" };
   var selectedLeagueKey = "kiddos";
   var selectedPosFilter = "";
   var rankingsLoadedOnce = false;
   var targetedIds = {}; // player_id -> true, for the CURRENT selectedLeagueKey only
   var lastSurvivalPickNo = null;
+  var lineupPlayersCache = null; // full /api/rankings player list, cached for the search box
+  var lineupRoster = []; // ordered list of {player_id, name, position, team} the user has added
 
   navTabs.forEach(function (tab) {
     tab.addEventListener("click", function () {
@@ -37,8 +57,11 @@
       var section = tab.dataset.section;
       sectionLive.classList.toggle("hidden", section !== "live");
       sectionRankings.classList.toggle("hidden", section !== "rankings");
+      sectionLineup.classList.toggle("hidden", section !== "lineup");
       if (section === "rankings") {
         loadOutlook();
+      } else if (section === "lineup") {
+        lineupLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · LINEUP OPTIMIZER";
       }
     });
   });
@@ -64,6 +87,15 @@
       survivalList.innerHTML = '<li class="alt-empty">Enter a pick number and check the board.</li>';
       lastSurvivalPickNo = null;
       if (!sectionRankings.classList.contains("hidden")) loadOutlook();
+
+      // Lineup tab (Chunk 55): the kicker follows the league switch; the
+      // built roster is NOT cleared (it's just a list of player_ids the
+      // user is trying out, not tied to league state), but the player
+      // SEARCH cache is, since /api/rankings' player pool is echoed
+      // per-league (identical today, but this stays correct if that ever
+      // changes -- see _shared.py's Chunk 53 scope note).
+      lineupLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · LINEUP OPTIMIZER";
+      lineupPlayersCache = null;
     });
   });
 
@@ -296,6 +328,184 @@
       );
     }).join("");
     wireStarButtons(survivalList);
+  }
+
+  // ---- Lineup Optimizer (Chunk 55 -- app/routers/lineup.py) ----
+
+  lineupSearchInput.addEventListener("input", function () {
+    var query = lineupSearchInput.value.trim().toLowerCase();
+    if (!query) {
+      lineupSearchResults.classList.add("hidden");
+      lineupSearchResults.innerHTML = "";
+      return;
+    }
+    ensureLineupPlayersLoaded().then(function () {
+      var matches = lineupPlayersCache
+        .filter(function (p) { return p.name && p.name.toLowerCase().indexOf(query) !== -1; })
+        .slice(0, 12);
+      renderLineupSearchResults(matches);
+    });
+  });
+
+  lineupClearBtn.addEventListener("click", function () {
+    lineupRoster = [];
+    renderLineupRoster();
+    hideLineupResults();
+  });
+
+  lineupOptimizeBtn.addEventListener("click", function () {
+    optimizeLineup({ player_ids: lineupRoster.map(function (p) { return p.player_id; }), league_key: selectedLeagueKey });
+  });
+
+  lineupLoadLiveBtn.addEventListener("click", function () {
+    var rosterId = parseInt(lineupRosterIdInput.value, 10);
+    if (!rosterId || rosterId < 1) {
+      showLineupError("Enter a valid roster_id.");
+      return;
+    }
+    optimizeLineup({ use_live_roster: true, roster_id: rosterId, league_key: selectedLeagueKey });
+  });
+
+  function ensureLineupPlayersLoaded() {
+    if (lineupPlayersCache) return Promise.resolve();
+    var params = new URLSearchParams({ league_key: selectedLeagueKey });
+    return fetch("/api/rankings?" + params.toString())
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) { lineupPlayersCache = data.players || []; });
+  }
+
+  function renderLineupSearchResults(matches) {
+    if (!matches.length) {
+      lineupSearchResults.innerHTML = '<li class="alt-empty">No matches.</li>';
+      lineupSearchResults.classList.remove("hidden");
+      return;
+    }
+    var rosterIds = {};
+    lineupRoster.forEach(function (p) { rosterIds[p.player_id] = true; });
+    lineupSearchResults.innerHTML = matches.map(function (p) {
+      var already = !!rosterIds[p.player_id];
+      return (
+        '<li class="ranking-row">' +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<button class="add-btn" data-player-id="' + p.player_id + '" type="button"' + (already ? " disabled" : "") + ">" +
+        (already ? "Added" : "+ Add") +
+        "</button></li>"
+      );
+    }).join("");
+    lineupSearchResults.classList.remove("hidden");
+    lineupSearchResults.querySelectorAll(".add-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var player = lineupPlayersCache.find(function (p) { return p.player_id === btn.dataset.playerId; });
+        if (player) addToLineupRoster(player);
+      });
+    });
+  }
+
+  function addToLineupRoster(player) {
+    if (lineupRoster.some(function (p) { return p.player_id === player.player_id; })) return;
+    lineupRoster.push({ player_id: player.player_id, name: player.name, position: player.position, team: player.team });
+    renderLineupRoster();
+    // Refresh the search results' "Added" state without re-querying.
+    var query = lineupSearchInput.value.trim().toLowerCase();
+    if (query) {
+      var matches = lineupPlayersCache.filter(function (p) { return p.name && p.name.toLowerCase().indexOf(query) !== -1; }).slice(0, 12);
+      renderLineupSearchResults(matches);
+    }
+  }
+
+  function removeFromLineupRoster(playerId) {
+    lineupRoster = lineupRoster.filter(function (p) { return p.player_id !== playerId; });
+    renderLineupRoster();
+  }
+
+  function renderLineupRoster() {
+    lineupRosterCount.textContent = String(lineupRoster.length);
+    if (!lineupRoster.length) {
+      lineupRosterList.innerHTML = '<li class="alt-empty">No players added yet.</li>';
+      return;
+    }
+    lineupRosterList.innerHTML = lineupRoster.map(function (p) {
+      return (
+        '<li class="ranking-row">' +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<button class="remove-btn" data-player-id="' + p.player_id + '" type="button">Remove</button>' +
+        "</li>"
+      );
+    }).join("");
+    lineupRosterList.querySelectorAll(".remove-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () { removeFromLineupRoster(btn.dataset.playerId); });
+    });
+  }
+
+  function showLineupError(msg) {
+    lineupError.textContent = msg;
+    lineupError.classList.remove("hidden");
+  }
+
+  function hideLineupResults() {
+    lineupError.classList.add("hidden");
+    lineupNote.classList.add("hidden");
+    lineupResultsBlock.classList.add("hidden");
+    lineupBenchBlock.classList.add("hidden");
+  }
+
+  function optimizeLineup(body) {
+    lineupError.classList.add("hidden");
+    lineupNote.classList.add("hidden");
+    fetch("/api/lineup/optimize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        if (data.note) {
+          lineupNote.textContent = data.note;
+          lineupNote.classList.remove("hidden");
+        }
+        renderLineupResults(data.starters || [], data.bench || []);
+      })
+      .catch(function (err) {
+        showLineupError(err.message || "Could not optimize this roster.");
+        lineupResultsBlock.classList.add("hidden");
+        lineupBenchBlock.classList.add("hidden");
+      });
+  }
+
+  function lineupRowHtml(p) {
+    var injuryBadge = p.injury_status ? '<span class="injury-badge">' + escapeHtmlTop(p.injury_status) + "</span>" : "";
+    return (
+      '<li class="ranking-row">' +
+      '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+      '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+      '<span class="ranking-team">' + (p.team || "") + "</span>" +
+      '<span class="ranking-vbd">' + (p.projected_points != null ? Math.round(p.projected_points) : "—") + "</span>" +
+      injuryBadge +
+      "</li>"
+    );
+  }
+
+  function renderLineupResults(starters, bench) {
+    if (!starters.length && !bench.length) {
+      lineupResultsBlock.classList.add("hidden");
+      lineupBenchBlock.classList.add("hidden");
+      return;
+    }
+    lineupStartersList.innerHTML = starters.length
+      ? starters.map(lineupRowHtml).join("")
+      : '<li class="alt-empty">No starters.</li>';
+    lineupBenchList.innerHTML = bench.length
+      ? bench.map(lineupRowHtml).join("")
+      : '<li class="alt-empty">Empty bench.</li>';
+    lineupResultsBlock.classList.remove("hidden");
+    lineupBenchBlock.classList.remove("hidden");
   }
 
   function escapeHtmlTop(str) {

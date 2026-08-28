@@ -19,6 +19,7 @@ from app.config import (
     SLEEPER_LEAGUE_ID,
 )
 from app.routers.draft_score import router as draft_score_router
+from app.routers.lineup import router as lineup_router
 from app.routers.live import router as live_router
 from app.routers.mcts import router as mcts_router
 from app.routers.outlook import router as outlook_router
@@ -44,6 +45,7 @@ app.include_router(draft_score_router)
 app.include_router(live_router)
 app.include_router(targets_router)  # CHUNK 54 -- planning/browsing, per-league target persistence
 app.include_router(outlook_router)  # CHUNK 54 -- planning/browsing, "likely available at pick N"
+app.include_router(lineup_router)  # CHUNK 55 -- planning/browsing, Start/Bench Lineup Optimizer
 
 
 @app.get("/")

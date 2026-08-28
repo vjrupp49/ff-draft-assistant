@@ -170,6 +170,22 @@
   color: var(--go);
 }
 
+/* Same visual treatment as .pos-filter-btn, WITHOUT being matched by its
+   position-filter click-wiring (querySelectorAll(".pos-filter-btn")) --
+   used for Lineup's plain action buttons (Chunk 55). */
+.ghost-btn {
+  background: var(--bg-1);
+  border: 1px solid var(--panel-border);
+  color: var(--text-mid);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ghost-btn:hover { border-color: var(--go); color: var(--go); }
+
 .rankings-list {
   list-style: none;
   margin: 0;
@@ -321,6 +337,61 @@
   width: 3.2rem;
   flex-shrink: 0;
   text-align: right;
+}
+
+/* ---------------- Lineup Optimizer additions (Chunk 55) ---------------- */
+
+.lineup-search-results {
+  margin-bottom: 1rem;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.lineup-roster-block {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--panel-border);
+}
+
+.lineup-actions-row {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.lineup-actions-row .pick-lookup-btn { width: auto; }
+
+.lineup-live-row {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--panel-border);
+}
+
+.add-btn, .remove-btn {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text-mid);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.add-btn:hover { border-color: var(--go); color: var(--go); }
+.remove-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+.injury-badge {
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  background: rgba(255, 84, 112, 0.15);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* An informational note (e.g. "N picks were simulated"), not an error --
