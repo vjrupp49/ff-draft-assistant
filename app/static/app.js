@@ -1,6 +1,110 @@
 (function () {
   "use strict";
 
+  // ---- CHUNK 53: app nav (section switcher + league switcher) ----
+  // Deliberately self-contained and added at the top of the SAME file/IIFE
+  // rather than a new script: it only ever touches its own new elements
+  // (#section-live/#section-rankings/#league-switcher/etc) and never
+  // reaches into the live-draft refs or logic below this block.
+  var navTabs = document.querySelectorAll(".nav-tab");
+  var sectionLive = document.getElementById("section-live");
+  var sectionRankings = document.getElementById("section-rankings");
+  var leagueButtons = document.querySelectorAll(".league-btn");
+  var posFilterButtons = document.querySelectorAll(".pos-filter-btn");
+  var rankingsList = document.getElementById("rankings-list");
+  var rankingsError = document.getElementById("rankings-error");
+  var rankingsLeagueKicker = document.getElementById("rankings-league-kicker");
+
+  var LEAGUE_NAMES = { kiddos: "KIDDOS", former_bradley_bums: "FORMER BRADLEY BUMS" };
+  var selectedLeagueKey = "kiddos";
+  var selectedPosFilter = "";
+  var rankingsLoadedOnce = false;
+
+  navTabs.forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      navTabs.forEach(function (t) { t.classList.remove("active"); });
+      tab.classList.add("active");
+      var section = tab.dataset.section;
+      sectionLive.classList.toggle("hidden", section !== "live");
+      sectionRankings.classList.toggle("hidden", section !== "rankings");
+      if (section === "rankings") {
+        fetchRankings();
+      }
+    });
+  });
+
+  leagueButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      leagueButtons.forEach(function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      selectedLeagueKey = btn.dataset.league;
+      rankingsLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · DRAFT BOARD";
+      // NOTE: the league switcher only drives this Rankings (planning)
+      // fetch -- the Live Draft section (below) keeps using the single
+      // active-league backend config throughout, unchanged (Chunk 53
+      // scope: live-draft-path stays out of per-request league switching).
+      if (!sectionRankings.classList.contains("hidden")) fetchRankings();
+    });
+  });
+
+  posFilterButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      posFilterButtons.forEach(function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      selectedPosFilter = btn.dataset.pos || "";
+      fetchRankings();
+    });
+  });
+
+  function fetchRankings() {
+    rankingsError.classList.add("hidden");
+    var params = new URLSearchParams({ league_key: selectedLeagueKey });
+    if (selectedPosFilter) params.set("position", selectedPosFilter);
+    if (!rankingsLoadedOnce) {
+      rankingsList.innerHTML = '<li class="alt-empty">Loading…</li>';
+    }
+    fetch("/api/rankings?" + params.toString())
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        if (data.error) {
+          rankingsError.textContent = data.error;
+          rankingsError.classList.remove("hidden");
+          rankingsList.innerHTML = "";
+          return;
+        }
+        rankingsLoadedOnce = true;
+        renderRankings(data.players || []);
+      })
+      .catch(function (err) {
+        rankingsError.textContent = err.message || "Could not load rankings.";
+        rankingsError.classList.remove("hidden");
+      });
+  }
+
+  function renderRankings(players) {
+    if (!players.length) {
+      rankingsList.innerHTML = '<li class="alt-empty">No players.</li>';
+      return;
+    }
+    rankingsList.innerHTML = players.slice(0, 60).map(function (p, i) {
+      return (
+        '<li class="ranking-row">' +
+        '<span class="ranking-rank">' + (i + 1) + "</span>" +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<span class="ranking-vbd">' + Math.round(p.vbd).toLocaleString() + "</span>" +
+        "</li>"
+      );
+    }).join("");
+  }
+
+  function escapeHtmlTop(str) {
+    var div = document.createElement("div");
+    div.textContent = str == null ? "" : str;
+    return div.innerHTML;
+  }
+
   // ---- element refs ----
   var setupEl = document.getElementById("setup");
   var screenEl = document.getElementById("screen");

@@ -8,101 +8,150 @@
 </head>
 <body>
 
-  <!-- SETUP PANEL: visible until a session is started, then collapses -->
-  <div id="setup" class="setup">
-    <div class="setup-card">
-      <div class="setup-kicker">KIDDOS LEAGUE · DRAFT SCORE</div>
-      <h1 class="setup-title">Get on the clock.</h1>
-      <p class="setup-sub">Draft on your phone in Sleeper. Watch this screen for the call.</p>
-
-      <div class="setup-row">
-        <label class="setup-label">My draft slot</label>
-        <input id="my-slot" type="number" min="1" max="10" value="1" class="setup-input" />
-      </div>
-
-      <div class="setup-row setup-mode">
-        <button class="mode-btn active" data-mode="live">Live Draft</button>
-        <button class="mode-btn" data-mode="mock">Watch Mock Draft</button>
-      </div>
-
-      <div id="mock-options" class="setup-row mock-options hidden">
-        <label class="setup-label">Seed</label>
-        <input id="mock-seed" type="number" min="1" value="1" class="setup-input setup-input-sm" />
-        <label class="setup-label">Pace (sec/pick)</label>
-        <input id="mock-delay" type="number" min="0" max="10" step="0.5" value="1.5" class="setup-input setup-input-sm" />
-      </div>
-
-      <button id="start-btn" class="start-btn">Start Watching</button>
-      <div id="setup-error" class="setup-error hidden"></div>
+  <!-- APP NAV: section switcher (Live Draft / Rankings) + league switcher.
+       CHUNK 53: the league switcher only drives the Rankings (planning)
+       section's requests -- the Live Draft section below is completely
+       unchanged and still runs against the single active-league backend
+       config, by design (see app/routers/_shared.py's scope note). -->
+  <nav class="app-nav">
+    <div class="app-nav-brand">FF DRAFT ASSISTANT</div>
+    <div class="app-nav-tabs" role="tablist">
+      <button class="nav-tab active" data-section="live">Live Draft</button>
+      <button class="nav-tab" data-section="rankings">Rankings</button>
     </div>
-  </div>
-
-  <!-- MAIN SCREEN -->
-  <div id="screen" class="screen hidden">
-
-    <header class="headline">
-      <div class="headline-left">
-        <div class="pick-meta">
-          <span id="round-label" class="round-label">ROUND —</span>
-          <span class="pick-sep">·</span>
-          <span id="pick-label" class="pick-label">PICK —</span>
-        </div>
-        <div id="turn-badge" class="turn-badge waiting">CONNECTING…</div>
+    <div class="app-nav-league">
+      <span class="app-nav-league-label">League</span>
+      <div id="league-switcher" class="league-switcher">
+        <button class="league-btn active" data-league="kiddos">Kiddos</button>
+        <button class="league-btn" data-league="former_bradley_bums">Former Bradley Bums</button>
       </div>
-      <div class="headline-right">
-        <div id="session-pill" class="session-pill">— </div>
+    </div>
+  </nav>
+
+  <!-- LIVE DRAFT SECTION -- unchanged from pre-Chunk-53, just wrapped -->
+  <section id="section-live" class="app-section">
+
+    <!-- SETUP PANEL: visible until a session is started, then collapses -->
+    <div id="setup" class="setup">
+      <div class="setup-card">
+        <div class="setup-kicker">KIDDOS LEAGUE · DRAFT SCORE</div>
+        <h1 class="setup-title">Get on the clock.</h1>
+        <p class="setup-sub">Draft on your phone in Sleeper. Watch this screen for the call.</p>
+
+        <div class="setup-row">
+          <label class="setup-label">My draft slot</label>
+          <input id="my-slot" type="number" min="1" max="10" value="1" class="setup-input" />
+        </div>
+
+        <div class="setup-row setup-mode">
+          <button class="mode-btn active" data-mode="live">Live Draft</button>
+          <button class="mode-btn" data-mode="mock">Watch Mock Draft</button>
+        </div>
+
+        <div id="mock-options" class="setup-row mock-options hidden">
+          <label class="setup-label">Seed</label>
+          <input id="mock-seed" type="number" min="1" value="1" class="setup-input setup-input-sm" />
+          <label class="setup-label">Pace (sec/pick)</label>
+          <input id="mock-delay" type="number" min="0" max="10" step="0.5" value="1.5" class="setup-input setup-input-sm" />
+        </div>
+
+        <button id="start-btn" class="start-btn">Start Watching</button>
+        <div id="setup-error" class="setup-error hidden"></div>
       </div>
-    </header>
+    </div>
 
-    <main class="main-grid">
+    <!-- MAIN SCREEN -->
+    <div id="screen" class="screen hidden">
 
-      <!-- LEFT: the recommendation -->
-      <section class="rec-column">
-
-        <div id="hero-card" class="hero-card">
-          <div class="hero-glow"></div>
-          <div id="provisional-banner" class="provisional-banner hidden">
-            <span class="provisional-icon">◆</span>
-            <span>PREVIEW — projecting opponents' next picks, not your actual turn yet</span>
+      <header class="headline">
+        <div class="headline-left">
+          <div class="pick-meta">
+            <span id="round-label" class="round-label">ROUND —</span>
+            <span class="pick-sep">·</span>
+            <span id="pick-label" class="pick-label">PICK —</span>
           </div>
-          <div class="hero-top">
-            <span id="hero-pos" class="pos-pill pos-QB">—</span>
-            <span id="hero-team" class="hero-team">—</span>
-            <span id="hero-tie" class="tie-badge hidden">STAT. TIED</span>
+          <div id="turn-badge" class="turn-badge waiting">CONNECTING…</div>
+        </div>
+        <div class="headline-right">
+          <div id="session-pill" class="session-pill">— </div>
+        </div>
+      </header>
+
+      <main class="main-grid">
+
+        <!-- LEFT: the recommendation -->
+        <section class="rec-column">
+
+          <div id="hero-card" class="hero-card">
+            <div class="hero-glow"></div>
+            <div id="provisional-banner" class="provisional-banner hidden">
+              <span class="provisional-icon">◆</span>
+              <span>PREVIEW — projecting opponents' next picks, not your actual turn yet</span>
+            </div>
+            <div class="hero-top">
+              <span id="hero-pos" class="pos-pill pos-QB">—</span>
+              <span id="hero-team" class="hero-team">—</span>
+              <span id="hero-tie" class="tie-badge hidden">STAT. TIED</span>
+            </div>
+            <div id="hero-name" class="hero-name">Waiting for data…</div>
+            <div class="hero-score-row">
+              <div id="hero-score" class="hero-score">—</div>
+              <div class="hero-score-label">DRAFT SCORE</div>
+            </div>
+            <div id="hero-why" class="hero-why">Start a session to see your first call.</div>
           </div>
-          <div id="hero-name" class="hero-name">Waiting for data…</div>
-          <div class="hero-score-row">
-            <div id="hero-score" class="hero-score">—</div>
-            <div class="hero-score-label">DRAFT SCORE</div>
+
+          <div class="alts-block">
+            <div class="alts-heading">ALSO IN THE MIX</div>
+            <ol id="alts-list" class="alts-list">
+              <li class="alt-empty">—</li>
+            </ol>
           </div>
-          <div id="hero-why" class="hero-why">Start a session to see your first call.</div>
-        </div>
 
-        <div class="alts-block">
-          <div class="alts-heading">ALSO IN THE MIX</div>
-          <ol id="alts-list" class="alts-list">
-            <li class="alt-empty">—</li>
-          </ol>
-        </div>
+        </section>
 
-      </section>
+        <!-- RIGHT: live feed -->
+        <aside class="feed-column">
+          <div class="feed-heading">
+            <span>LIVE FEED</span>
+            <span id="recalc-badge" class="recalc-badge hidden">RECALCULATING…</span>
+          </div>
+          <ul id="feed-list" class="feed-list">
+            <li class="feed-empty">No picks yet.</li>
+          </ul>
+          <div class="feed-stats">
+            <span id="cheap-count">0</span> quick updates · <span id="expensive-count">0</span> full recomputes
+          </div>
+        </aside>
 
-      <!-- RIGHT: live feed -->
-      <aside class="feed-column">
-        <div class="feed-heading">
-          <span>LIVE FEED</span>
-          <span id="recalc-badge" class="recalc-badge hidden">RECALCULATING…</span>
-        </div>
-        <ul id="feed-list" class="feed-list">
-          <li class="feed-empty">No picks yet.</li>
-        </ul>
-        <div class="feed-stats">
-          <span id="cheap-count">0</span> quick updates · <span id="expensive-count">0</span> full recomputes
-        </div>
-      </aside>
+      </main>
+    </div>
 
-    </main>
-  </div>
+  </section>
+
+  <!-- RANKINGS SECTION (planning/browsing) -- new in Chunk 53. Proves
+       genuine per-request league_key switching against /api/rankings. -->
+  <section id="section-rankings" class="app-section hidden">
+    <div class="rankings-wrap">
+      <header class="rankings-head">
+        <div>
+          <div class="setup-kicker" id="rankings-league-kicker">KIDDOS LEAGUE · DRAFT BOARD</div>
+          <h1 class="rankings-title">Value-based rankings.</h1>
+        </div>
+        <div class="rankings-filters" id="rankings-pos-filters">
+          <button class="pos-filter-btn active" data-pos="">ALL</button>
+          <button class="pos-filter-btn" data-pos="QB">QB</button>
+          <button class="pos-filter-btn" data-pos="RB">RB</button>
+          <button class="pos-filter-btn" data-pos="WR">WR</button>
+          <button class="pos-filter-btn" data-pos="TE">TE</button>
+        </div>
+      </header>
+      <div id="rankings-error" class="setup-error hidden"></div>
+      <ol id="rankings-list" class="rankings-list">
+        <li class="alt-empty">Loading…</li>
+      </ol>
+    </div>
+  </section>
 
   <script src="/static/app.js"></script>
 </body>

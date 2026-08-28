@@ -30,7 +30,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import Field
 
-from app.routers._shared import DraftStateRequest, resolve_draft_state
+from app.routers._shared import DraftStateRequest, resolve_draft_state, resolve_league
 from app.services import draft_score_engine
 from app.services import mcts as mcts_service
 from app.services import shapley as shapley_service
@@ -65,6 +65,10 @@ async def draft_score(request: DraftScoreRequest) -> dict[str, Any]:
     players_by_id = {p["player_id"]: p for p in projections_payload["players"]}
 
     draft_state = await resolve_draft_state(request)
+    # Echo which league this planning call resolved to (None/omitted ->
+    # today's default). Live-draft calls don't have a per-request league,
+    # by design -- see _shared.py's Chunk 53 scope note.
+    league = None if request.use_live_draft else resolve_league(request.league_key)
 
     t0 = time.perf_counter()
     try:
@@ -92,5 +96,7 @@ async def draft_score(request: DraftScoreRequest) -> dict[str, Any]:
         "current_pick_no": draft_state.current_pick_no,
         "current_round": draft_state.current_round,
         "runtime_seconds": runtime_seconds,
+        "league_key": league.key if league else None,
+        "league_name": league.league_name if league else None,
         **result,
     }

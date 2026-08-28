@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.routers._shared import resolve_league
 from app.services.projections import build_baseline_projections
 from app.services.simulation import (
     DEFAULT_NUM_SIMS,
@@ -33,6 +34,10 @@ async def _players_by_id() -> dict[str, dict]:
 async def simulate_player(
     player_id: str,
     num_sims: int = Query(default=DEFAULT_NUM_SIMS, ge=100, le=20000),
+    league_key: Optional[str] = Query(
+        default=None,
+        description="Which league (app/leagues.py registry) this simulation is for. Omit for today's default.",
+    ),
 ):
     """
     Simulated season-total outcome distribution for one player: mean,
@@ -40,6 +45,8 @@ async def simulate_player(
     Cached (see app/services/simulation.py) keyed to the player's current
     projection, so this is fast on repeat calls.
     """
+    league = resolve_league(league_key)
+
     players = await _players_by_id()
     player = players.get(player_id)
     if not player:
@@ -53,6 +60,8 @@ async def simulate_player(
         "team": player.get("team"),
         "projected_points": player.get("projected_points"),
         "num_sims": num_sims,
+        "league_key": league.key,
+        "league_name": league.league_name,
         **summary,
     }
 
@@ -61,6 +70,10 @@ class RosterSimulationRequest(BaseModel):
     player_ids: list[str] = Field(..., min_length=1, description="Sleeper player_ids making up the candidate roster")
     num_sims: int = Field(default=DEFAULT_NUM_SIMS, ge=100, le=20000)
     seed: Optional[int] = Field(default=DEFAULT_SEED, description="Omit/null for a fresh random draw each call")
+    league_key: Optional[str] = Field(
+        default=None,
+        description="Which league (app/leagues.py registry) this simulation is for. Omit for today's default.",
+    )
 
 
 @router.post("/api/simulate/roster")
@@ -72,6 +85,8 @@ async def simulate_roster(request: RosterSimulationRequest):
     simplification). Returns the roster-level summary plus each player's
     own individual summary from the same run.
     """
+    league = resolve_league(request.league_key)
+
     players_by_id = await _players_by_id()
 
     roster_players = []
@@ -87,4 +102,6 @@ async def simulate_roster(request: RosterSimulationRequest):
         raise HTTPException(status_code=404, detail=f"Unknown player_id(s): {unknown_ids}")
 
     result = simulate_roster_summary(roster_players, num_sims=request.num_sims, seed=request.seed)
+    result["league_key"] = league.key
+    result["league_name"] = league.league_name
     return result

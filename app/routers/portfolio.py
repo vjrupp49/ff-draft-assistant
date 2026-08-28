@@ -11,6 +11,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.routers._shared import resolve_league
 from app.services import portfolio as portfolio_service
 from app.services.projections import build_baseline_projections
 from app.services.simulation import DEFAULT_NUM_SIMS
@@ -27,10 +28,16 @@ class PortfolioEvaluateRequest(BaseModel):
     )
     num_sims: int = Field(default=DEFAULT_NUM_SIMS, ge=100, le=20000)
     seed: Optional[int] = Field(default=42, description="Omit/null for a fresh random draw each call")
+    league_key: Optional[str] = Field(
+        default=None,
+        description="Which league (app/leagues.py registry) this evaluation is for. Omit for today's default.",
+    )
 
 
 @router.post("/api/portfolio/evaluate")
 async def evaluate_portfolio(request: PortfolioEvaluateRequest) -> dict[str, Any]:
+    league = resolve_league(request.league_key)
+
     projections_payload = await build_baseline_projections()
     players_by_id = {p["player_id"]: p for p in projections_payload["players"]}
 
@@ -46,9 +53,12 @@ async def evaluate_portfolio(request: PortfolioEvaluateRequest) -> dict[str, Any
     if unknown_ids:
         raise HTTPException(status_code=404, detail=f"Unknown player_id(s): {unknown_ids}")
 
-    return portfolio_service.evaluate_roster(
+    result = portfolio_service.evaluate_roster(
         roster_players,
         risk_aversion=request.risk_aversion,
         num_sims=request.num_sims,
         seed=request.seed,
     )
+    result["league_key"] = league.key
+    result["league_name"] = league.league_name
+    return result

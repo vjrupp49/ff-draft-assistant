@@ -34,6 +34,196 @@
 
 * { box-sizing: border-box; }
 
+/* ---------------- app nav (Chunk 53) ---------------- */
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  padding: 0.9rem 1.5rem;
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border-bottom: 1px solid var(--panel-border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.app-nav-brand {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--text-mid);
+  white-space: nowrap;
+}
+
+.app-nav-tabs {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.nav-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-mid);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.nav-tab:hover { color: var(--text-hi); }
+.nav-tab.active {
+  background: rgba(33, 230, 161, 0.12);
+  border-color: var(--go);
+  color: var(--go);
+}
+
+.app-nav-league {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
+}
+
+.app-nav-league-label {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.league-switcher {
+  display: flex;
+  gap: 0.35rem;
+  background: var(--bg-1);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.2rem;
+}
+
+.league-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-mid);
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.league-btn.active {
+  background: var(--qb);
+  color: #0e0620;
+}
+
+.app-section.hidden { display: none !important; }
+
+/* ---------------- rankings section (Chunk 53) ---------------- */
+
+.rankings-wrap {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.75rem 1.5rem 3rem;
+}
+
+.rankings-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.rankings-title {
+  font-size: 1.7rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0.2rem 0 0;
+}
+
+.rankings-filters {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.pos-filter-btn {
+  background: var(--bg-1);
+  border: 1px solid var(--panel-border);
+  color: var(--text-mid);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.pos-filter-btn.active {
+  background: rgba(33, 230, 161, 0.12);
+  border-color: var(--go);
+  color: var(--go);
+}
+
+.rankings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.ranking-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 1rem;
+}
+
+.ranking-rank {
+  color: var(--text-lo);
+  font-weight: 800;
+  font-size: 0.85rem;
+  width: 1.8rem;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.ranking-name {
+  font-weight: 700;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-team {
+  color: var(--text-lo);
+  font-size: 0.8rem;
+  font-weight: 700;
+  width: 3rem;
+  flex-shrink: 0;
+}
+
+.ranking-vbd {
+  font-weight: 800;
+  color: var(--text-hi);
+  font-variant-numeric: tabular-nums;
+  width: 4.5rem;
+  text-align: right;
+  flex-shrink: 0;
+}
+
 html, body {
   margin: 0;
   padding: 0;
