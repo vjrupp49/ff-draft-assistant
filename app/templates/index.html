@@ -17,7 +17,7 @@
     <div class="app-nav-brand">FF DRAFT ASSISTANT</div>
     <div class="app-nav-tabs" role="tablist">
       <button class="nav-tab active" data-section="live">Live Draft</button>
-      <button class="nav-tab" data-section="rankings">Rankings</button>
+      <button class="nav-tab" data-section="rankings">Draft Outlook</button>
     </div>
     <div class="app-nav-league">
       <span class="app-nav-league-label">League</span>
@@ -129,15 +129,68 @@
 
   </section>
 
-  <!-- RANKINGS SECTION (planning/browsing) -- new in Chunk 53. Proves
-       genuine per-request league_key switching against /api/rankings. -->
+  <!-- DRAFT OUTLOOK SECTION (planning/browsing) -- Chunk 53 built the basic
+       VBD-only Rankings tab; Chunk 54 extends it in place (same section,
+       not rebuilt): a real Draft-Score (MCTS) top-of-board panel, per-league
+       star/target marking, and a pick-N board-risk lookup. -->
   <section id="section-rankings" class="app-section hidden">
     <div class="rankings-wrap">
       <header class="rankings-head">
         <div>
-          <div class="setup-kicker" id="rankings-league-kicker">KIDDOS LEAGUE · DRAFT BOARD</div>
-          <h1 class="rankings-title">Value-based rankings.</h1>
+          <div class="setup-kicker" id="rankings-league-kicker">KIDDOS LEAGUE · DRAFT OUTLOOK</div>
+          <h1 class="rankings-title">Who do you want, and when will they be gone?</h1>
         </div>
+        <div class="outlook-slot-row">
+          <label class="setup-label">My draft slot</label>
+          <input id="outlook-my-slot" type="number" min="1" max="10" value="1" class="setup-input setup-input-sm" />
+        </div>
+      </header>
+
+      <!-- Real Draft Score (MCTS), not the cheaper VBD approximation below --
+           see app/routers/mcts.py. Only covers the top of the board (the
+           MCTS engine only ever explores its top candidate_breadth VBD
+           candidates per call -- this is a real architectural ceiling, not
+           a display choice), which is exactly what "who do I want with my
+           first pick" needs most. -->
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">TOP DRAFT SCORE PICKS</span>
+          <span class="outlook-block-tag outlook-tag-real">REAL MCTS ENGINE</span>
+        </div>
+        <div class="outlook-subnote">The same Draft Score engine that drives the live view, run against a fresh (0-picks-made) board for the slot above.</div>
+        <div id="draft-score-error" class="setup-error hidden"></div>
+        <ol id="draft-score-list" class="rankings-list">
+          <li class="alt-empty">Loading…</li>
+        </ol>
+      </div>
+
+      <!-- Cheap, ADP-driven Monte Carlo re-use (opponent_model.py) -- NOT a
+           fresh MCTS search per pick number. See app/services/survival.py. -->
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">LIKELY AVAILABLE AT PICK #</span>
+          <span class="outlook-block-tag outlook-tag-approx">ADP-BASED ESTIMATE</span>
+        </div>
+        <div class="pick-lookup-row">
+          <input id="pick-lookup-input" type="number" min="1" value="24" class="setup-input setup-input-sm" />
+          <button id="pick-lookup-btn" class="start-btn pick-lookup-btn">Check the board</button>
+        </div>
+        <div class="outlook-subnote">Monte Carlo replay using real market ADP + positional need (the same opponent model MCTS's own rollouts use) -- a board-risk estimate, not a pick recommendation.</div>
+        <div id="survival-error" class="setup-error hidden"></div>
+        <ol id="survival-list" class="rankings-list">
+          <li class="alt-empty">Enter a pick number and check the board.</li>
+        </ol>
+      </div>
+
+      <!-- Full-board VBD ranking -- unchanged from Chunk 53, now explicitly
+           labeled as an approximation rather than presented as equivalent
+           to the Draft Score engine above. -->
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">FULL BOARD</span>
+          <span class="outlook-block-tag outlook-tag-approx">VBD APPROXIMATION</span>
+        </div>
+        <div class="outlook-subnote">Value-based ranking only -- no simulation, no roster-awareness, no risk-adjustment. Useful for browsing the whole pool; not the same number the live Draft Score would give a specific candidate.</div>
         <div class="rankings-filters" id="rankings-pos-filters">
           <button class="pos-filter-btn active" data-pos="">ALL</button>
           <button class="pos-filter-btn" data-pos="QB">QB</button>
@@ -145,11 +198,11 @@
           <button class="pos-filter-btn" data-pos="WR">WR</button>
           <button class="pos-filter-btn" data-pos="TE">TE</button>
         </div>
-      </header>
-      <div id="rankings-error" class="setup-error hidden"></div>
-      <ol id="rankings-list" class="rankings-list">
-        <li class="alt-empty">Loading…</li>
-      </ol>
+        <div id="rankings-error" class="setup-error hidden"></div>
+        <ol id="rankings-list" class="rankings-list">
+          <li class="alt-empty">Loading…</li>
+        </ol>
+      </div>
     </div>
   </section>
 

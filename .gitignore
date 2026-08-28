@@ -11,3 +11,7 @@ data/replay_snapshots/
 data/replay_trajectories/
 .env
 server.log
+
+# CHUNK 54: data/draft_targets.json is deliberately NOT listed here, unlike
+# the regenerable API caches above -- it holds genuine user target-pick
+# input with no way to regenerate it if lost. See app/services/targets.py.

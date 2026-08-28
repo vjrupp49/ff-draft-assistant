@@ -1,11 +1,12 @@
 (function () {
   "use strict";
 
-  // ---- CHUNK 53: app nav (section switcher + league switcher) ----
-  // Deliberately self-contained and added at the top of the SAME file/IIFE
-  // rather than a new script: it only ever touches its own new elements
-  // (#section-live/#section-rankings/#league-switcher/etc) and never
-  // reaches into the live-draft refs or logic below this block.
+  // ---- CHUNK 53/54: app nav (section switcher + league switcher) + the
+  // Draft Outlook view (Top Draft Score picks, per-league star targets,
+  // pick-N board risk, full VBD board). Deliberately self-contained at the
+  // top of the SAME file/IIFE rather than a new script: it only ever
+  // touches its own elements (#section-live/#section-rankings/etc) and
+  // never reaches into the live-draft refs or logic below this block.
   var navTabs = document.querySelectorAll(".nav-tab");
   var sectionLive = document.getElementById("section-live");
   var sectionRankings = document.getElementById("section-rankings");
@@ -14,11 +15,20 @@
   var rankingsList = document.getElementById("rankings-list");
   var rankingsError = document.getElementById("rankings-error");
   var rankingsLeagueKicker = document.getElementById("rankings-league-kicker");
+  var outlookMySlotInput = document.getElementById("outlook-my-slot");
+  var draftScoreList = document.getElementById("draft-score-list");
+  var draftScoreError = document.getElementById("draft-score-error");
+  var pickLookupInput = document.getElementById("pick-lookup-input");
+  var pickLookupBtn = document.getElementById("pick-lookup-btn");
+  var survivalList = document.getElementById("survival-list");
+  var survivalError = document.getElementById("survival-error");
 
   var LEAGUE_NAMES = { kiddos: "KIDDOS", former_bradley_bums: "FORMER BRADLEY BUMS" };
   var selectedLeagueKey = "kiddos";
   var selectedPosFilter = "";
   var rankingsLoadedOnce = false;
+  var targetedIds = {}; // player_id -> true, for the CURRENT selectedLeagueKey only
+  var lastSurvivalPickNo = null;
 
   navTabs.forEach(function (tab) {
     tab.addEventListener("click", function () {
@@ -28,7 +38,7 @@
       sectionLive.classList.toggle("hidden", section !== "live");
       sectionRankings.classList.toggle("hidden", section !== "rankings");
       if (section === "rankings") {
-        fetchRankings();
+        loadOutlook();
       }
     });
   });
@@ -38,12 +48,22 @@
       leagueButtons.forEach(function (b) { b.classList.remove("active"); });
       btn.classList.add("active");
       selectedLeagueKey = btn.dataset.league;
-      rankingsLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · DRAFT BOARD";
-      // NOTE: the league switcher only drives this Rankings (planning)
-      // fetch -- the Live Draft section (below) keeps using the single
-      // active-league backend config throughout, unchanged (Chunk 53
-      // scope: live-draft-path stays out of per-request league switching).
-      if (!sectionRankings.classList.contains("hidden")) fetchRankings();
+      rankingsLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · DRAFT OUTLOOK";
+      // NOTE: the league switcher only drives this Draft Outlook (planning)
+      // section's fetches -- the Live Draft section (below) keeps using
+      // the single active-league backend config throughout, unchanged
+      // (Chunk 53 scope: live-draft-path stays out of per-request league
+      // switching). Targets are ALSO per-league (Chunk 54) -- switching
+      // leagues here re-fetches this league's own star list, never the
+      // other league's.
+      //
+      // The survival (pick-N) panel is query-driven, not auto-refreshed on
+      // every league switch -- reset it rather than leave a stale result
+      // (including a stale star state) visibly attributed to the wrong
+      // league until the next "Check the board" click.
+      survivalList.innerHTML = '<li class="alt-empty">Enter a pick number and check the board.</li>';
+      lastSurvivalPickNo = null;
+      if (!sectionRankings.classList.contains("hidden")) loadOutlook();
     });
   });
 
@@ -56,9 +76,75 @@
     });
   });
 
+  outlookMySlotInput.addEventListener("change", function () {
+    fetchDraftScore();
+  });
+
+  pickLookupBtn.addEventListener("click", function () {
+    fetchSurvival();
+  });
+
+  function loadOutlook() {
+    fetchTargets().then(function () {
+      fetchRankings();
+      fetchDraftScore();
+    });
+  }
+
+  // ---- per-league star/target persistence (Chunk 54, app/routers/targets.py) ----
+
+  function fetchTargets() {
+    return fetch("/api/targets?league_key=" + encodeURIComponent(selectedLeagueKey))
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        targetedIds = {};
+        (data.player_ids || []).forEach(function (pid) { targetedIds[pid] = true; });
+      })
+      .catch(function () { targetedIds = {}; });
+  }
+
+  function toggleTarget(playerId, btn) {
+    var isTargeted = !!targetedIds[playerId];
+    var req = isTargeted
+      ? fetch("/api/targets/" + encodeURIComponent(playerId) + "?league_key=" + encodeURIComponent(selectedLeagueKey), { method: "DELETE" })
+      : fetch("/api/targets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ player_id: playerId, league_key: selectedLeagueKey }),
+        });
+    req.then(function (resp) { return resp.json(); })
+      .then(function () {
+        targetedIds[playerId] = !isTargeted;
+        // Re-render every visible list so the star state stays consistent
+        // across the Draft Score panel, the survival panel, and the full
+        // VBD board -- the same player can appear in all three.
+        document.querySelectorAll('.star-btn[data-player-id="' + playerId + '"]').forEach(function (b) {
+          b.classList.toggle("active", !isTargeted);
+          b.textContent = !isTargeted ? "★" : "☆";
+        });
+      })
+      .catch(function () { /* leave UI state as-is on failure */ });
+  }
+
+  function starButtonHtml(playerId) {
+    var active = !!targetedIds[playerId];
+    return '<button class="star-btn' + (active ? " active" : "") + '" data-player-id="' + playerId + '" title="Target this player" type="button">' + (active ? "★" : "☆") + "</button>";
+  }
+
+  function wireStarButtons(container) {
+    container.querySelectorAll(".star-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        toggleTarget(btn.dataset.playerId, btn);
+      });
+    });
+  }
+
+  // ---- full VBD board (Chunk 53, unchanged math -- app/routers/rankings.py) ----
+
   function fetchRankings() {
     rankingsError.classList.add("hidden");
-    var params = new URLSearchParams({ league_key: selectedLeagueKey });
+    var requestedLeagueKey = selectedLeagueKey; // see fetchSurvival's identical stale-response note
+    var params = new URLSearchParams({ league_key: requestedLeagueKey });
     if (selectedPosFilter) params.set("position", selectedPosFilter);
     if (!rankingsLoadedOnce) {
       rankingsList.innerHTML = '<li class="alt-empty">Loading…</li>';
@@ -66,6 +152,7 @@
     fetch("/api/rankings?" + params.toString())
       .then(function (resp) { return resp.json(); })
       .then(function (data) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
         if (data.error) {
           rankingsError.textContent = data.error;
           rankingsError.classList.remove("hidden");
@@ -76,6 +163,7 @@
         renderRankings(data.players || []);
       })
       .catch(function (err) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
         rankingsError.textContent = err.message || "Could not load rankings.";
         rankingsError.classList.remove("hidden");
       });
@@ -94,9 +182,120 @@
         '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
         '<span class="ranking-team">' + (p.team || "") + "</span>" +
         '<span class="ranking-vbd">' + Math.round(p.vbd).toLocaleString() + "</span>" +
+        starButtonHtml(p.player_id) +
         "</li>"
       );
     }).join("");
+    wireStarButtons(rankingsList);
+  }
+
+  // ---- Top Draft Score picks (Chunk 54 -- real MCTS engine, app/routers/mcts.py) ----
+
+  function fetchDraftScore() {
+    draftScoreError.classList.add("hidden");
+    draftScoreList.innerHTML = '<li class="alt-empty">Running the Draft Score engine…</li>';
+    var mySlot = parseInt(outlookMySlotInput.value, 10) || 1;
+    var requestedLeagueKey = selectedLeagueKey; // see fetchSurvival's identical stale-response note
+    var params = new URLSearchParams({ my_slot: String(mySlot), league_key: requestedLeagueKey, top_n: "12" });
+    fetch("/api/outlook/top-picks?" + params.toString())
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        if (data.note) {
+          draftScoreError.textContent = data.note;
+          draftScoreError.classList.remove("hidden");
+          draftScoreError.classList.add("outlook-note");
+        } else {
+          draftScoreError.classList.remove("outlook-note");
+        }
+        renderDraftScore((data.recommendations || []));
+      })
+      .catch(function (err) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        draftScoreError.textContent = err.message || "Could not run the Draft Score engine.";
+        draftScoreError.classList.remove("hidden");
+        draftScoreError.classList.remove("outlook-note");
+        draftScoreList.innerHTML = "";
+      });
+  }
+
+  function renderDraftScore(recs) {
+    if (!recs.length) {
+      draftScoreList.innerHTML = '<li class="alt-empty">No recommendations.</li>';
+      return;
+    }
+    draftScoreList.innerHTML = recs.map(function (p, i) {
+      return (
+        '<li class="ranking-row">' +
+        '<span class="ranking-rank">' + (i + 1) + "</span>" +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<span class="ranking-score">' + Math.round(p.mcts_score).toLocaleString() + "</span>" +
+        starButtonHtml(p.player_id) +
+        "</li>"
+      );
+    }).join("");
+    wireStarButtons(draftScoreList);
+  }
+
+  // ---- Likely available at pick N (Chunk 54 -- app/services/survival.py reuse) ----
+
+  function fetchSurvival() {
+    survivalError.classList.add("hidden");
+    var pickNo = parseInt(pickLookupInput.value, 10);
+    if (!pickNo || pickNo < 1) {
+      survivalError.textContent = "Enter a valid pick number.";
+      survivalError.classList.remove("hidden");
+      return;
+    }
+    lastSurvivalPickNo = pickNo;
+    // Captured at fetch-start -- a slow request from a league the user has
+    // since switched AWAY from must not clobber the newly-selected league's
+    // (possibly already-reset) panel when it finally resolves.
+    var requestedLeagueKey = selectedLeagueKey;
+    survivalList.innerHTML = '<li class="alt-empty">Simulating the board…</li>';
+    var params = new URLSearchParams({ league_key: requestedLeagueKey, pick_no: String(pickNo), top_n: "30" });
+    fetch("/api/outlook/survival?" + params.toString())
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        if (requestedLeagueKey !== selectedLeagueKey) return; // stale -- league changed while this was in flight
+        renderSurvival(data.players || [], data.pick_no);
+      })
+      .catch(function (err) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        survivalError.textContent = err.message || "Could not estimate board risk.";
+        survivalError.classList.remove("hidden");
+        survivalList.innerHTML = "";
+      });
+  }
+
+  function renderSurvival(players, pickNo) {
+    if (!players.length) {
+      survivalList.innerHTML = '<li class="alt-empty">No players.</li>';
+      return;
+    }
+    survivalList.innerHTML = players.map(function (p) {
+      var pct = Math.round(p.survival_probability * 100);
+      var riskClass = pct >= 66 ? "risk-low" : pct >= 33 ? "risk-mid" : "risk-high";
+      var adp = p.market_adp != null ? p.market_adp.toFixed(1) : "—";
+      return (
+        '<li class="ranking-row">' +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="survival-adp">ADP ' + adp + "</span>" +
+        '<span class="survival-pct ' + riskClass + '">' + pct + "%</span>" +
+        starButtonHtml(p.player_id) +
+        "</li>"
+      );
+    }).join("");
+    wireStarButtons(survivalList);
   }
 
   function escapeHtmlTop(str) {

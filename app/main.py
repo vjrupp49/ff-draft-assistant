@@ -21,10 +21,12 @@ from app.config import (
 from app.routers.draft_score import router as draft_score_router
 from app.routers.live import router as live_router
 from app.routers.mcts import router as mcts_router
+from app.routers.outlook import router as outlook_router
 from app.routers.portfolio import router as portfolio_router
 from app.routers.rankings import router as rankings_router
 from app.routers.shapley import router as shapley_router
 from app.routers.simulate import router as simulate_router
+from app.routers.targets import router as targets_router
 from app.services.sleeper import SleeperAPIError, sleeper_client
 
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +42,8 @@ app.include_router(portfolio_router)
 app.include_router(shapley_router)
 app.include_router(draft_score_router)
 app.include_router(live_router)
+app.include_router(targets_router)  # CHUNK 54 -- planning/browsing, per-league target persistence
+app.include_router(outlook_router)  # CHUNK 54 -- planning/browsing, "likely available at pick N"
 
 
 @app.get("/")

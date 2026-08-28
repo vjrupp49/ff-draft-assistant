@@ -224,6 +224,112 @@
   flex-shrink: 0;
 }
 
+/* ---------------- Draft Outlook additions (Chunk 54) ---------------- */
+
+.outlook-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.outlook-slot-row .setup-input-sm { width: 3.5rem; }
+
+.outlook-block {
+  margin-top: 1.75rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--panel-border);
+}
+.outlook-block:first-of-type { margin-top: 0.5rem; }
+
+.outlook-block-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+}
+
+.outlook-block-title {
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--text-lo);
+}
+
+.outlook-block-tag {
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+.outlook-tag-real { background: rgba(33, 230, 161, 0.15); color: var(--go); border: 1px solid var(--go); }
+.outlook-tag-approx { background: rgba(154, 163, 189, 0.15); color: var(--text-mid); border: 1px solid var(--panel-border); }
+
+.outlook-subnote {
+  font-size: 0.8rem;
+  color: var(--text-lo);
+  margin-bottom: 0.85rem;
+  max-width: 65ch;
+  line-height: 1.4;
+}
+
+.pick-lookup-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+.pick-lookup-row .setup-input-sm { width: 5rem; }
+.pick-lookup-btn { width: auto; margin-top: 0; padding: 0.55rem 1.1rem; font-size: 0.85rem; }
+
+.star-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-lo);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+  flex-shrink: 0;
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.star-btn:hover { color: var(--recalc); transform: scale(1.15); }
+.star-btn.active { color: var(--recalc); }
+
+.ranking-score {
+  font-weight: 800;
+  color: var(--go);
+  font-variant-numeric: tabular-nums;
+  width: 5rem;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.survival-pct {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  width: 3.5rem;
+  text-align: right;
+  flex-shrink: 0;
+}
+.survival-pct.risk-high { color: var(--danger); }
+.survival-pct.risk-mid { color: var(--recalc); }
+.survival-pct.risk-low { color: var(--go); }
+
+.survival-adp {
+  color: var(--text-lo);
+  font-size: 0.78rem;
+  width: 3.2rem;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+/* An informational note (e.g. "N picks were simulated"), not an error --
+   reuses .setup-error's layout/spacing but in a neutral tone. */
+.setup-error.outlook-note {
+  color: var(--text-mid);
+  font-weight: 500;
+}
+
 html, body {
   margin: 0;
   padding: 0;
