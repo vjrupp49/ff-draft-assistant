@@ -11,6 +11,7 @@
   var sectionLive = document.getElementById("section-live");
   var sectionRankings = document.getElementById("section-rankings");
   var sectionLineup = document.getElementById("section-lineup");
+  var sectionTrade = document.getElementById("section-trade");
   var leagueButtons = document.querySelectorAll(".league-btn");
   var posFilterButtons = document.querySelectorAll(".pos-filter-btn");
   var rankingsList = document.getElementById("rankings-list");
@@ -41,14 +42,33 @@
   var lineupStartersList = document.getElementById("lineup-starters-list");
   var lineupBenchList = document.getElementById("lineup-bench-list");
 
+  // CHUNK 56 -- roster browser + Trade Suggester skeleton refs
+  var tradeLeagueKicker = document.getElementById("trade-league-kicker");
+  var tradeRosterSelect = document.getElementById("trade-roster-select");
+  var tradeRosterError = document.getElementById("trade-roster-error");
+  var tradeRosterViewList = document.getElementById("trade-roster-view-list");
+  var tradeSearchInputs = { a: document.getElementById("trade-search-a"), b: document.getElementById("trade-search-b") };
+  var tradeSearchResultsEls = { a: document.getElementById("trade-search-results-a"), b: document.getElementById("trade-search-results-b") };
+  var tradeSideListEls = { a: document.getElementById("trade-side-a-list"), b: document.getElementById("trade-side-b-list") };
+  var tradeSideVbdEls = { a: document.getElementById("trade-side-a-vbd"), b: document.getElementById("trade-side-b-vbd") };
+  var tradeSideProjEls = { a: document.getElementById("trade-side-a-proj"), b: document.getElementById("trade-side-b-proj") };
+  var tradeCompareBtn = document.getElementById("trade-compare-btn");
+  var tradeClearBtn = document.getElementById("trade-clear-btn");
+  var tradeError = document.getElementById("trade-error");
+  var tradeResult = document.getElementById("trade-result");
+  var tradeDifferentialText = document.getElementById("trade-differential-text");
+  var tradeMethodNote = document.getElementById("trade-method-note");
+
   var LEAGUE_NAMES = { kiddos: "KIDDOS", former_bradley_bums: "FORMER BRADLEY BUMS" };
   var selectedLeagueKey = "kiddos";
   var selectedPosFilter = "";
   var rankingsLoadedOnce = false;
   var targetedIds = {}; // player_id -> true, for the CURRENT selectedLeagueKey only
   var lastSurvivalPickNo = null;
-  var lineupPlayersCache = null; // full /api/rankings player list, cached for the search box
+  var lineupPlayersCache = null; // full /api/rankings player list, cached for the search box (shared by Lineup AND Trade)
   var lineupRoster = []; // ordered list of {player_id, name, position, team} the user has added
+  var tradeRostersData = null; // last /api/rosters response for the CURRENT selectedLeagueKey
+  var tradeSides = { a: [], b: [] }; // ordered lists of {player_id, name, position, team}
 
   navTabs.forEach(function (tab) {
     tab.addEventListener("click", function () {
@@ -58,10 +78,14 @@
       sectionLive.classList.toggle("hidden", section !== "live");
       sectionRankings.classList.toggle("hidden", section !== "rankings");
       sectionLineup.classList.toggle("hidden", section !== "lineup");
+      sectionTrade.classList.toggle("hidden", section !== "trade");
       if (section === "rankings") {
         loadOutlook();
       } else if (section === "lineup") {
         lineupLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · LINEUP OPTIMIZER";
+      } else if (section === "trade") {
+        tradeLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · ROSTERS & TRADE";
+        loadRosterBrowser();
       }
     });
   });
@@ -96,6 +120,14 @@
       // changes -- see _shared.py's Chunk 53 scope note).
       lineupLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · LINEUP OPTIMIZER";
       lineupPlayersCache = null;
+
+      // Trade tab (Chunk 56): the roster browser is genuinely per-league
+      // data (different rosters/owners) -- reload it if visible. The
+      // trade-comparison sides are NOT cleared (same reasoning as
+      // lineupRoster above: just a list of player_ids being tried out).
+      tradeLeagueKicker.textContent = LEAGUE_NAMES[selectedLeagueKey] + " LEAGUE · ROSTERS & TRADE";
+      tradeRostersData = null;
+      if (!sectionTrade.classList.contains("hidden")) loadRosterBrowser();
     });
   });
 
@@ -507,6 +539,218 @@
     lineupResultsBlock.classList.remove("hidden");
     lineupBenchBlock.classList.remove("hidden");
   }
+
+  // ---- Roster Browser (Chunk 56 Task 3, app/routers/rosters.py) ----
+
+  function loadRosterBrowser() {
+    tradeRosterError.classList.add("hidden");
+    tradeRosterViewList.innerHTML = '<li class="alt-empty">Loading rosters…</li>';
+    var requestedLeagueKey = selectedLeagueKey; // see fetchSurvival's stale-response note (Chunk 54) -- same pattern
+    var params = new URLSearchParams({ league_key: requestedLeagueKey });
+    fetch("/api/rosters?" + params.toString())
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        tradeRostersData = data;
+        populateRosterSelect(data);
+        renderRosterView(tradeRosterSelect.value);
+      })
+      .catch(function (err) {
+        if (requestedLeagueKey !== selectedLeagueKey) return;
+        tradeRosterError.textContent = err.message || "Could not load rosters.";
+        tradeRosterError.classList.remove("hidden");
+        tradeRosterViewList.innerHTML = "";
+      });
+  }
+
+  function populateRosterSelect(data) {
+    tradeRosterSelect.innerHTML = data.rosters.map(function (r) {
+      var label = r.team_name + (r.is_mine ? " (You)" : "") + " -- " + r.player_count + " players";
+      return '<option value="' + r.roster_id + '">' + escapeHtmlTop(label) + "</option>";
+    }).join("");
+  }
+
+  tradeRosterSelect.addEventListener("change", function () {
+    renderRosterView(tradeRosterSelect.value);
+  });
+
+  function renderRosterView(rosterId) {
+    if (!tradeRostersData) return;
+    var roster = tradeRostersData.rosters.find(function (r) { return String(r.roster_id) === String(rosterId); });
+    if (!roster) {
+      tradeRosterViewList.innerHTML = '<li class="alt-empty">No roster selected.</li>';
+      return;
+    }
+    if (!roster.players.length) {
+      tradeRosterViewList.innerHTML = '<li class="alt-empty">' + (roster.is_mine ? "Your" : "This") + " roster has no players yet (pre-draft).</li>";
+      return;
+    }
+    tradeRosterViewList.innerHTML = roster.players.map(function (p) {
+      var mineBadge = roster.is_mine ? '<span class="mine-badge">YOU</span>' : "";
+      var injuryBadge = p.injury_status ? '<span class="injury-badge">' + escapeHtmlTop(p.injury_status) + "</span>" : "";
+      return (
+        '<li class="ranking-row">' +
+        '<span class="pos-pill pos-' + (p.position || "") + '">' + (p.position || "?") + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name || p.player_id) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<span class="ranking-vbd">' + (p.projected_points != null ? Math.round(p.projected_points) : "—") + "</span>" +
+        injuryBadge + mineBadge +
+        "</li>"
+      );
+    }).join("");
+  }
+
+  // ---- Trade Suggester SKELETON (Chunk 56 Task 4, app/routers/trade.py) --
+  // Two independent search-and-add sides (reusing Lineup's exact
+  // search/add/remove pattern, and its SAME lineupPlayersCache/
+  // ensureLineupPlayersLoaded -- one shared player-search cache per
+  // league, not fetched twice for two different tabs) + a raw VBD/points
+  // comparison. Deliberately not roster-aware and not any smarter than
+  // that -- see trade.py's module docstring.
+
+  ["a", "b"].forEach(function (side) {
+    tradeSearchInputs[side].addEventListener("input", function () {
+      var query = tradeSearchInputs[side].value.trim().toLowerCase();
+      if (!query) {
+        tradeSearchResultsEls[side].classList.add("hidden");
+        tradeSearchResultsEls[side].innerHTML = "";
+        return;
+      }
+      ensureLineupPlayersLoaded().then(function () {
+        var matches = lineupPlayersCache
+          .filter(function (p) { return p.name && p.name.toLowerCase().indexOf(query) !== -1; })
+          .slice(0, 12);
+        renderTradeSearchResults(side, matches);
+      });
+    });
+  });
+
+  function renderTradeSearchResults(side, matches) {
+    var container = tradeSearchResultsEls[side];
+    if (!matches.length) {
+      container.innerHTML = '<li class="alt-empty">No matches.</li>';
+      container.classList.remove("hidden");
+      return;
+    }
+    var sideIds = {};
+    tradeSides[side].forEach(function (p) { sideIds[p.player_id] = true; });
+    container.innerHTML = matches.map(function (p) {
+      var already = !!sideIds[p.player_id];
+      return (
+        '<li class="ranking-row">' +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<button class="add-btn" data-player-id="' + p.player_id + '" data-side="' + side + '" type="button"' + (already ? " disabled" : "") + ">" +
+        (already ? "Added" : "+ Add") +
+        "</button></li>"
+      );
+    }).join("");
+    container.classList.remove("hidden");
+    container.querySelectorAll(".add-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var player = lineupPlayersCache.find(function (p) { return p.player_id === btn.dataset.playerId; });
+        if (player) addToTradeSide(btn.dataset.side, player);
+      });
+    });
+  }
+
+  function addToTradeSide(side, player) {
+    if (tradeSides[side].some(function (p) { return p.player_id === player.player_id; })) return;
+    tradeSides[side].push({ player_id: player.player_id, name: player.name, position: player.position, team: player.team });
+    renderTradeSide(side);
+    var query = tradeSearchInputs[side].value.trim().toLowerCase();
+    if (query) {
+      var matches = lineupPlayersCache.filter(function (p) { return p.name && p.name.toLowerCase().indexOf(query) !== -1; }).slice(0, 12);
+      renderTradeSearchResults(side, matches);
+    }
+  }
+
+  function removeFromTradeSide(side, playerId) {
+    tradeSides[side] = tradeSides[side].filter(function (p) { return p.player_id !== playerId; });
+    renderTradeSide(side);
+  }
+
+  function renderTradeSide(side) {
+    var list = tradeSideListEls[side];
+    if (!tradeSides[side].length) {
+      list.innerHTML = '<li class="alt-empty">No players added.</li>';
+      return;
+    }
+    list.innerHTML = tradeSides[side].map(function (p) {
+      return (
+        '<li class="ranking-row">' +
+        '<span class="pos-pill pos-' + p.position + '">' + p.position + "</span>" +
+        '<span class="ranking-name">' + escapeHtmlTop(p.name) + "</span>" +
+        '<span class="ranking-team">' + (p.team || "") + "</span>" +
+        '<button class="remove-btn" data-player-id="' + p.player_id + '" data-side="' + side + '" type="button">Remove</button>' +
+        "</li>"
+      );
+    }).join("");
+    list.querySelectorAll(".remove-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () { removeFromTradeSide(btn.dataset.side, btn.dataset.playerId); });
+    });
+  }
+
+  tradeClearBtn.addEventListener("click", function () {
+    tradeSides = { a: [], b: [] };
+    renderTradeSide("a");
+    renderTradeSide("b");
+    tradeResult.classList.add("hidden");
+    tradeError.classList.add("hidden");
+    tradeSideVbdEls.a.textContent = "0";
+    tradeSideProjEls.a.textContent = "0";
+    tradeSideVbdEls.b.textContent = "0";
+    tradeSideProjEls.b.textContent = "0";
+  });
+
+  tradeCompareBtn.addEventListener("click", function () {
+    tradeError.classList.add("hidden");
+    var body = {
+      league_key: selectedLeagueKey,
+      side_a_player_ids: tradeSides.a.map(function (p) { return p.player_id; }),
+      side_b_player_ids: tradeSides.b.map(function (p) { return p.player_id; }),
+    };
+    fetch("/api/trade/compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().then(function (b) { throw new Error(b.detail || "Request failed"); });
+        return resp.json();
+      })
+      .then(function (data) {
+        tradeSideVbdEls.a.textContent = data.side_a.total_vbd;
+        tradeSideProjEls.a.textContent = data.side_a.total_projected_points;
+        tradeSideVbdEls.b.textContent = data.side_b.total_vbd;
+        tradeSideProjEls.b.textContent = data.side_b.total_projected_points;
+
+        // vbd_differential = (value given up) - (value received). Framed
+        // in "you give / you receive" terms to match the UI's own labels,
+        // not "Side A/Side B" jargon.
+        var diff = data.vbd_differential;
+        var diffText;
+        if (diff > 0.05) {
+          diffText = 'You give up <span class="favor-b">' + diff.toFixed(1) + " more raw VBD</span> than you receive -- favors the other side.";
+        } else if (diff < -0.05) {
+          diffText = 'You receive <span class="favor-a">' + Math.abs(diff).toFixed(1) + " more raw VBD</span> than you give up -- favors you.";
+        } else {
+          diffText = "Dead even on raw VBD.";
+        }
+        tradeDifferentialText.innerHTML = diffText;
+        tradeMethodNote.textContent = data.method_note;
+        tradeResult.classList.remove("hidden");
+      })
+      .catch(function (err) {
+        tradeError.textContent = err.message || "Could not compare this trade.";
+        tradeError.classList.remove("hidden");
+        tradeResult.classList.add("hidden");
+      });
+  });
 
   function escapeHtmlTop(str) {
     var div = document.createElement("div");

@@ -394,6 +394,66 @@
   white-space: nowrap;
 }
 
+/* ---------------- Trade / Roster Browser additions (Chunk 56) ---------------- */
+
+.mine-badge {
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  background: rgba(33, 230, 161, 0.15);
+  color: var(--go);
+  border: 1px solid var(--go);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.trade-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+  margin-top: 0.75rem;
+}
+@media (max-width: 700px) {
+  .trade-columns { grid-template-columns: 1fr; }
+}
+
+.trade-side {
+  background: var(--bg-1);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.trade-side-total {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-mid);
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--panel-border);
+}
+.trade-side-total span { color: var(--text-hi); font-variant-numeric: tabular-nums; }
+
+.trade-result {
+  margin-top: 1.25rem;
+  padding: 1rem 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+}
+
+.trade-differential {
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin-bottom: 0.4rem;
+}
+.trade-differential .favor-a { color: var(--go); }
+.trade-differential .favor-b { color: var(--recalc); }
+
 /* An informational note (e.g. "N picks were simulated"), not an error --
    reuses .setup-error's layout/spacing but in a neutral tone. */
 .setup-error.outlook-note {

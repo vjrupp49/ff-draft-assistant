@@ -19,6 +19,7 @@
       <button class="nav-tab active" data-section="live">Live Draft</button>
       <button class="nav-tab" data-section="rankings">Draft Outlook</button>
       <button class="nav-tab" data-section="lineup">Lineup</button>
+      <button class="nav-tab" data-section="trade">Trade</button>
     </div>
     <div class="app-nav-league">
       <span class="app-nav-league-label">League</span>
@@ -267,6 +268,77 @@
           <span class="outlook-block-title">BENCH</span>
         </div>
         <ol id="lineup-bench-list" class="rankings-list"></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRADE SECTION (planning/browsing) -- Chunk 56: roster browser (Task
+       3) + Trade Suggester SKELETON (Task 4). The trade comparison is a
+       simple raw VBD/projected-points sum per side (see
+       app/routers/trade.py's module docstring) -- explicitly NOT
+       Shapley/portfolio-based, NOT season-simulation-based, and NOT
+       proactive "who should I trade with" suggestion logic. -->
+  <section id="section-trade" class="app-section hidden">
+    <div class="rankings-wrap">
+      <header class="rankings-head">
+        <div>
+          <div class="setup-kicker" id="trade-league-kicker">KIDDOS LEAGUE · ROSTERS &amp; TRADE</div>
+          <h1 class="rankings-title">Browse rosters, try a trade.</h1>
+        </div>
+      </header>
+
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">ROSTER BROWSER</span>
+        </div>
+        <div class="outlook-subnote">Both real leagues are pre-draft, so every roster is empty today -- this becomes useful once a draft happens. Select a roster (yours or any opponent's) to view it.</div>
+        <div class="pick-lookup-row">
+          <select id="trade-roster-select" class="setup-input"></select>
+        </div>
+        <div id="trade-roster-error" class="setup-error hidden"></div>
+        <ol id="trade-roster-view-list" class="rankings-list">
+          <li class="alt-empty">Loading rosters…</li>
+        </ol>
+      </div>
+
+      <div class="outlook-block">
+        <div class="outlook-block-head">
+          <span class="outlook-block-title">TRADE COMPARISON</span>
+          <span class="outlook-block-tag outlook-tag-approx">SKELETON -- RAW VALUE ONLY</span>
+        </div>
+        <div class="outlook-subnote">Search and add players to each side to compare raw VBD / projected points. Not roster-fit-aware, not Shapley marginal value, not a proactive trade suggestion -- a transparent manual gut-check only.</div>
+
+        <div class="trade-columns">
+          <div class="trade-side">
+            <div class="outlook-block-title">SIDE A -- YOU GIVE</div>
+            <input id="trade-search-a" type="text" placeholder="Search players…" class="setup-input" />
+            <ol id="trade-search-results-a" class="rankings-list lineup-search-results hidden"></ol>
+            <ol id="trade-side-a-list" class="rankings-list">
+              <li class="alt-empty">No players added.</li>
+            </ol>
+            <div class="trade-side-total">Total VBD: <span id="trade-side-a-vbd">0</span> · Proj: <span id="trade-side-a-proj">0</span></div>
+          </div>
+          <div class="trade-side">
+            <div class="outlook-block-title">SIDE B -- YOU RECEIVE</div>
+            <input id="trade-search-b" type="text" placeholder="Search players…" class="setup-input" />
+            <ol id="trade-search-results-b" class="rankings-list lineup-search-results hidden"></ol>
+            <ol id="trade-side-b-list" class="rankings-list">
+              <li class="alt-empty">No players added.</li>
+            </ol>
+            <div class="trade-side-total">Total VBD: <span id="trade-side-b-vbd">0</span> · Proj: <span id="trade-side-b-proj">0</span></div>
+          </div>
+        </div>
+
+        <div class="lineup-actions-row">
+          <button id="trade-compare-btn" class="start-btn pick-lookup-btn">Compare Trade</button>
+          <button id="trade-clear-btn" class="ghost-btn" type="button">Clear both sides</button>
+        </div>
+
+        <div id="trade-error" class="setup-error hidden"></div>
+        <div id="trade-result" class="trade-result hidden">
+          <div class="trade-differential" id="trade-differential-text"></div>
+          <div class="outlook-subnote" id="trade-method-note"></div>
+        </div>
       </div>
     </div>
   </section>

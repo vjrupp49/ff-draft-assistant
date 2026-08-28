@@ -94,12 +94,19 @@ def test_live_roster_path_read_only_and_graceful_for_pre_draft_leagues():
         assert "note" in body
 
 
-def test_missing_player_ids_and_missing_roster_id_are_400_not_500():
+def test_missing_player_ids_is_400_not_500():
     resp = client.post("/api/lineup/optimize", json={"league_key": "kiddos"})
     assert resp.status_code == 400
 
-    resp = client.post("/api/lineup/optimize", json={"use_live_roster": True, "league_key": "kiddos"})
-    assert resp.status_code == 400
+
+def test_live_roster_omitted_roster_id_resolves_my_roster_chunk_56():
+    """CHUNK 56 update: use_live_roster=true with NO roster_id now resolves MY roster via
+    app.services.roster_identity instead of requiring one -- both real leagues are pre_draft,
+    so this is a graceful empty-roster 200, not the old 400 "roster_id is required" error."""
+    for league_key in ("kiddos", "former_bradley_bums"):
+        resp = client.post("/api/lineup/optimize", json={"use_live_roster": True, "league_key": league_key})
+        assert resp.status_code == 200
+        assert resp.json()["roster_size"] == 0
 
 
 def test_unknown_player_id_is_404():

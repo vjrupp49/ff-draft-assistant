@@ -14,14 +14,14 @@ TWO WAYS to supply a roster:
     planning route in this app already takes (portfolio.py, shapley.py,
     simulate.py's roster endpoint) and is the only way to exercise this
     endpoint meaningfully today -- see SCOPING NOTE below.
-  - use_live_roster=True + roster_id: pulls a real roster from Sleeper's
-    live, READ-ONLY /league/{id}/rosters endpoint for `league_key`.
-    Requires roster_id explicitly because this project has never tracked
-    which Sleeper roster_id/owner_id is "mine" anywhere -- draft_state.py's
-    own docstring is explicit that draft SLOT, not Sleeper roster_id/
-    user_id, is how "mine" is tracked everywhere else in this codebase.
-    There is no existing mapping to infer a roster_id from, so Vincent
-    supplies it rather than this endpoint guessing at one.
+  - use_live_roster=True (+ optional roster_id): pulls a real roster from
+    Sleeper's live, READ-ONLY /league/{id}/rosters endpoint for
+    `league_key`. roster_id is now OPTIONAL (CHUNK 56 update) -- omit it
+    to get MY roster (resolved via app.services.roster_identity, the new
+    shared "which Sleeper roster is mine" infrastructure Chunk 56 built),
+    or pass an explicit roster_id to pull any OTHER team's roster (e.g.
+    for the Chunk 56 roster browser / Trade Suggester, which need to look
+    at opponents' rosters too, not just mine).
 
 SCOPING NOTE (Chunk 55, stated explicitly, not silently glossed over):
 both real leagues (Kiddos, Former Bradley Bums) are still pre_draft as of
@@ -77,6 +77,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.routers._shared import resolve_league
+from app.services import roster_identity
 from app.services.projections import build_baseline_projections
 from app.services.sleeper import SleeperAPIError, sleeper_client
 from app.services.vbd import allocate_roster_starters_with_flex_ranks, compute_league_wide_percentiles
@@ -101,7 +102,10 @@ class LineupOptimizeRequest(BaseModel):
     )
     roster_id: Optional[int] = Field(
         default=None,
-        description="Sleeper roster_id to pull when use_live_roster=true (see module docstring for why this is explicit, not inferred).",
+        description=(
+            "Sleeper roster_id to pull when use_live_roster=true. Omit to get MY roster "
+            "(resolved via app.services.roster_identity -- CHUNK 56)."
+        ),
     )
 
 
@@ -110,16 +114,27 @@ async def optimize_lineup(request: LineupOptimizeRequest) -> dict[str, Any]:
     league = resolve_league(request.league_key)
 
     if request.use_live_roster:
-        if request.roster_id is None:
-            raise HTTPException(status_code=400, detail="roster_id is required when use_live_roster=true")
         try:
-            rosters = await sleeper_client.get_rosters(league.league_id)
+            if request.roster_id is None:
+                # CHUNK 56: no roster_id given -- resolve MY roster via the
+                # new shared infrastructure instead of requiring Vincent to
+                # look it up and pass it in every time.
+                rosters, my_roster_id = await roster_identity.get_rosters_with_mine_flag(league)
+                if my_roster_id is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Could not resolve MY roster in league '{league.key}' -- pass roster_id explicitly.",
+                    )
+                target_roster_id = my_roster_id
+            else:
+                rosters = await sleeper_client.get_rosters(league.league_id)
+                target_roster_id = request.roster_id
         except SleeperAPIError as exc:
             raise HTTPException(status_code=502, detail=f"Could not fetch live rosters: {exc}") from exc
-        roster = next((r for r in rosters if r.get("roster_id") == request.roster_id), None)
+        roster = next((r for r in rosters if r.get("roster_id") == target_roster_id), None)
         if roster is None:
             raise HTTPException(
-                status_code=404, detail=f"roster_id={request.roster_id} not found in league '{league.key}'"
+                status_code=404, detail=f"roster_id={target_roster_id} not found in league '{league.key}'"
             )
         # Sleeper returns `players: null` (not []) for a roster with no
         # picks yet -- both real leagues are pre_draft as of this chunk,

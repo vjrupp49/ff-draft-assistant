@@ -25,9 +25,11 @@ from app.routers.mcts import router as mcts_router
 from app.routers.outlook import router as outlook_router
 from app.routers.portfolio import router as portfolio_router
 from app.routers.rankings import router as rankings_router
+from app.routers.rosters import router as rosters_router
 from app.routers.shapley import router as shapley_router
 from app.routers.simulate import router as simulate_router
 from app.routers.targets import router as targets_router
+from app.routers.trade import router as trade_router
 from app.services.sleeper import SleeperAPIError, sleeper_client
 
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +48,8 @@ app.include_router(live_router)
 app.include_router(targets_router)  # CHUNK 54 -- planning/browsing, per-league target persistence
 app.include_router(outlook_router)  # CHUNK 54 -- planning/browsing, "likely available at pick N"
 app.include_router(lineup_router)  # CHUNK 55 -- planning/browsing, Start/Bench Lineup Optimizer
+app.include_router(rosters_router)  # CHUNK 56 -- planning/browsing, roster browser
+app.include_router(trade_router)  # CHUNK 56 -- planning/browsing, Trade Suggester skeleton
 
 
 @app.get("/")
