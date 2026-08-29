@@ -191,6 +191,41 @@ under EITHER code version) -- explicitly documented as data drift, not a
 code-driven re-pin, the first time this file has needed that distinction.
 Pick 59 kept `xfail`, re-reasoned to reflect the fix's real (null) effect
 on this specific case rather than falsely claiming partial credit.
+
+CHUNK 60 UPDATE -- ADP-MARGIN TIE-BREAK FIX (signed margin -> absolute
+distance; see app/services/mcts.py's CHUNK 60 FIX notes). This changes
+two of the pinned picks, for two DIFFERENT reasons -- both confirmed by
+running a git worktree at commit 0250519 (Chunk 41, last time these were
+pinned) against today's freshly-refreshed live data:
+
+  - Pick 59: xfail REMOVED, now passes as (Zay Flowers, True, False).
+    The Chunk 39 xfail above documented Goff winning via the ADP-margin
+    tie-break -- which is precisely the signed-margin bug Chunk 60 fixed.
+    Goff (real ADP 24.9, 34 picks overdue at pick 59) beat Flowers only
+    because 24.9-62 = -37.1 is more negative than 41.8-62 = -20.2. On
+    absolute distance (37.1 vs 20.2) the tie-break no longer fires and
+    Flowers -- the higher raw mcts_score AND the genuine WR starting
+    need -- wins outright. The "QB-elevation pathology resurfacing
+    through the ADP tie-break" that Chunk 38/39 flagged at this pick is
+    gone. (Still a data-fragile ~3pt near-tie at seed=1; noted on the pin.)
+
+  - Pick 82: CODE-DRIVEN re-pin (Courtland Sutton -> Tony Pollard),
+    NOT data drift. The tied group {Pollard, Sutton} is now broken by
+    absolute distance to the next turn (pick 99): Pollard (ADP 82.9,
+    |dist| 16.1) is promoted over the marginally-more-overdue Sutton
+    (ADP 79.8, |dist| 19.2). Pre-Chunk-60 (signed), min(-16.1, -19.2)
+    picked Sutton, who was already the leader, so nothing reordered.
+    Both are legitimate within-noise at-risk near-ties (score 2139.5 vs
+    2140.7); this is a low-stakes flip and, in isolation, signed was
+    arguably marginally better here (lower ADP = likelier gone) -- but
+    the aggregate multi-seed sweep in the Chunk 60 report shows the
+    absolute-distance rule is net WR-positive / QB-negative across full
+    drafts, and it fixes the clearly-wrong signed behavior at pick 59
+    and at Chunk 41 point 2 (Maye/Adams). Flagged for the planning chat.
+
+  - Picks 39/79/102/122: pick 102 also drifted (Matthew Stafford ->
+    Sam Darnold, all three fields) but that is pure DATA drift --
+    identical on the Chunk-41 commit. 39/79/122 still match their pins.
 """
 from __future__ import annotations
 
@@ -265,25 +300,27 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
 @pytest.mark.parametrize(
     "pick_no,expected_top_name,expect_adaptive_applied,expect_adp_tie_break_applied",
     [
-        pytest.param(
-            59, "Zay Flowers", True, True,
-            marks=pytest.mark.xfail(
-                reason="CHUNK 39: this chunk's fix has NO measurable effect on this pick, confirmed via "
-                       "TWO independent negative controls (in-process monkeypatch AND git-stash to pure "
-                       "Chunk 38 code) -- Goff still wins, byte-identical scores (1733.7/1736.7) with or "
-                       "without the fix. Goff wins via Chunk 24's separate, pre-existing ADP-margin "
-                       "tiebreak on a genuine near-tie (z~0.5) -- not this chunk's mechanism, not fixed "
-                       "by this chunk, not this chunk's to fix. See module docstring's CHUNK 39 "
-                       "CORRECTION for the full, self-corrected evidence trail.",
-                strict=False,
-            ),
-            id="59-Zay Flowers-True-True",
-        ),
-        (79, "Courtland Sutton", True, False),  # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick behaves identically under pure Chunk 38 code today; the live projections/ADP data has simply moved since Chunk 38's original pins -- see module docstring's CHUNK 39 CORRECTION
-        (39, "Kyren Williams", True, False),   # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick ALSO resolves cleanly to Kyren Williams under pure Chunk 38 code today, unrelated to this chunk's fix -- see module docstring's CHUNK 39 CORRECTION
-        (82, "Courtland Sutton", True, True),  # CHUNK 41 RE-PIN (DATA DRIFT, not code-driven): root-caused in Chunk 40 via replay_decision() against pre-Chunk-33 (b811770) AND current HEAD, same frozen trajectory+pinned snapshot -- Kelce, the original driver of this pick's mechanics, is no longer even IN the top-8 VBD candidate pool under current live data (confirmed under BOTH code versions), so this decision's shape has moved since Chunk 39's own pin. Top NAME is still unchanged (Courtland Sutton) -- re-verified directly against today's live data before repinning (not blind-flipped off the one failing assert): both flags have drifted True, not just adaptive_resolution_applied (the one the test failure surfaced first) -- adp_tie_break_applied also now fires, confirmed by a direct live re-run outside the test suite. See docs/handoff/V4_chunks_31-.md's Chunk 40 entry for the fuller pick-82 evidence trail (this is the SAME data-drift phenomenon as the pick-79/39/102 re-pins above, just caught one chunk later).
-        (102, "Matthew Stafford", False, False),  # DATA DRIFT, not code-driven -- same git-stash confirmation -- see module docstring's CHUNK 39 CORRECTION
-        (122, "Matthew Stafford", False, False),  # CHUNK 38: still resolves decisively after the base 150 iterations -- unaffected by Chunk 39 -- see module docstring's CHUNK 38 CORRECTION
+        # CHUNK 60 RE-PIN -- xfail REMOVED, now passes. The Chunk 39 xfail
+        # documented Jared Goff winning this pick via the ADP-margin
+        # tie-break "on real-market-urgency grounds unrelated to roster
+        # fit." That was exactly the SIGNED-margin bug Chunk 60 fixed:
+        # Goff (real ADP 24.9, already 34 picks overdue at pick 59) beat
+        # Zay Flowers (ADP 41.8) only because -37.1 is more negative than
+        # -20.2. With the fix on absolute distance to the next turn
+        # (Goff |24.9-62|=37.1 vs Flowers |41.8-62|=20.2), the tie-break
+        # no longer fires -- Flowers, the pre-tie-break leader by raw
+        # mcts_score (1736.7 vs 1733.7) and the pick that fills a genuine
+        # WR starting need, wins outright. adp_tie_break_applied is now
+        # False. CAVEAT: that ~3pt score gap is a data-fragile near-tie
+        # (seeds 2/3 land on D'Andre Swift) -- if live data drift flips
+        # Flowers/Goff back this may need re-examination, but pinning to
+        # today's real seed=1 behavior is correct per this file's practice.
+        (59, "Zay Flowers", True, False),
+        (79, "Courtland Sutton", True, False),  # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick behaves identically under pure Chunk 38 code today; the live projections/ADP data has simply moved since Chunk 38's original pins -- see module docstring's CHUNK 39 CORRECTION. CHUNK 60: re-verified, still matches under today's data on both pre-Chunk-60 and post-fix code.
+        (39, "Kyren Williams", True, False),   # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick ALSO resolves cleanly to Kyren Williams under pure Chunk 38 code today, unrelated to this chunk's fix -- see module docstring's CHUNK 39 CORRECTION. CHUNK 60: still matches (Chunk 59's report saw a transient "Jared Goff" here; the live data moved back before this chunk's run -- confirmed identical to the pin on BOTH the Chunk-41 commit and post-Chunk-60 code with today's data).
+        (82, "Tony Pollard", True, True),  # CHUNK 60 RE-PIN -- CODE-DRIVEN by this chunk's ADP-margin fix (NOT data drift). Was (Courtland Sutton, True, True). Post-fix the tied group {Pollard 2139.5, Sutton 2140.7} (both within_noise) is broken by ABSOLUTE distance to next turn (99): Pollard |82.9-99|=16.1 beats Sutton |79.8-99|=19.2, so Pollard is promoted (adp_tie_break_applied True). Under the old SIGNED margin, min(-16.1, -19.2) picked Sutton, who was already the leader -> no reorder (adp_tie_break_applied was False). Confirmed via git-stash: pre-fix code + today's data gives Sutton/False; post-fix gives Pollard/True. Both candidates are legitimate at-risk near-ties; low-stakes flip, flagged in the Chunk 60 report.
+        (102, "Sam Darnold", True, False),  # CHUNK 60 RE-PIN -- DATA DRIFT, not code-driven. Was (Matthew Stafford, False, False); all three fields drifted. Confirmed code-independent: a git worktree at commit 0250519 (Chunk 41, when this was last pinned) run against today's freshly-refreshed projections/ADP data ALSO gives Sam Darnold / adaptive=True / adp_tie_break=False, identical to post-Chunk-60 code. The live data simply moved (the cache TTL expired between the Chunk 59 run and this one).
+        (122, "Matthew Stafford", False, False),  # CHUNK 38: still resolves decisively after the base 150 iterations -- unaffected by Chunk 39. CHUNK 60: re-verified, still matches under today's data.
     ],
 )
 def test_adaptive_resolution_replay_matches_expected_behavior(
@@ -307,15 +344,15 @@ def test_adaptive_resolution_replay_matches_expected_behavior(
 
 
 @pytest.mark.xfail(
-    reason="CHUNK 39: this chunk's fix has NO measurable effect on pick 59 (confirmed via two "
-           "independent negative controls -- see the parametrized test above and module docstring's "
-           "CHUNK 39 CORRECTION), so this is unchanged from Chunk 38: pick 59 is a genuine, narrow "
-           "near-tie by raw mcts_score (Zay Flowers 1736.7 vs Jared Goff 1733.7, combined stderr ~6.0, "
-           "z~0.5) that legitimately needs the full 600-iteration budget to even narrowly separate the "
-           "two by score -- not a broken early-stop mechanism, but pick 59 no longer demonstrates "
-           "EARLY-stopping specifically (the same reason Chunk 30 previously moved this test off pick "
-           "82). Finding a new pick that cleanly demonstrates early-stopping is out of this chunk's "
-           "narrow scope -- deferred.",
+    reason="Pick 59 is a genuine, narrow near-tie by raw mcts_score (Zay Flowers 1736.7 vs Jared Goff "
+           "1733.7, combined stderr ~6.0, z~0.5) that legitimately runs the full 600-iteration adaptive "
+           "budget without separating early -- not a broken early-stop mechanism, but pick 59 does not "
+           "demonstrate EARLY-stopping specifically (the same reason Chunk 30 moved this test off pick "
+           "82). CHUNK 60: Flowers now wins this pick outright (the abs-distance tie-break fix removed "
+           "the signed-margin promotion of Goff -- see module docstring's CHUNK 60 UPDATE and the "
+           "parametrized test above, whose own xfail is now removed), but adaptive resolution still "
+           "uses all 600 iterations here, so this early-stop test stays xfail. Finding a new pick that "
+           "cleanly demonstrates early-stopping is out of scope -- deferred.",
     strict=False,
 )
 def test_adaptive_resolution_can_stop_early_before_the_iteration_cap(

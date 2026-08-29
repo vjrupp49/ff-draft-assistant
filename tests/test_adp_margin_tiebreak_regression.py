@@ -117,6 +117,48 @@ def test_tie_break_leaves_leader_when_it_already_has_the_tightest_margin():
     assert out[0]["name"] == "Leader"
 
 
+def test_extremely_overdue_candidate_does_not_beat_the_on_the_bubble_one():
+    """
+    CHUNK 60 FIX regression guard. The tie-break ranks on ABSOLUTE
+    distance to the next turn, not a signed margin. Before this fix,
+    `_margin = adp - next_turn_pick_no` fed straight into `min()`, so the
+    MOST OVERDUE candidate (real ADP furthest BELOW the next turn) always
+    won -- unboundedly. This is the Chunk 41 point 2 (Maye/Adams) shape:
+    a candidate whose real ADP is a wild anomaly relative to the current
+    pick must NOT out-rank a candidate whose ADP sits right on the bubble
+    of the user's next turn.
+
+    next_turn_pick_no=67. Overdue: |7 - 67| = 60. Bubble: |55 - 67| = 12.
+    Signed would give Overdue -60 vs Bubble -12 -> min picks Overdue (the
+    bug). Absolute gives 60 vs 12 -> min picks Bubble (correct).
+    """
+    results = [
+        _r("Overdue", 100.0, 7.0, True),   # leader by score, but real ADP is a 60-pick anomaly
+        _r("Bubble", 99.0, 55.0, True),    # tied, genuinely at risk of being gone by the next turn
+    ]
+    out = mcts_service._apply_adp_margin_tie_break(results, next_turn_pick_no=67)
+    assert out[0]["name"] == "Bubble", (
+        "an extremely-overdue candidate (ADP far below the current pick) must not win the "
+        "tie-break over one whose ADP sits close to the user's next turn -- see CHUNK 60 FIX"
+    )
+
+
+def test_tie_break_favors_closer_adp_on_the_safe_side_too():
+    """
+    CHUNK 60 FIX -- absolute distance is symmetric: between two tied
+    candidates BOTH expected to still be on the board at the next turn,
+    prefer the one closer to it (less margin of safety = more worth
+    taking now rather than gambling on the wait).
+    next_turn_pick_no=40. Near: |46 - 40| = 6. Far: |90 - 40| = 50.
+    """
+    results = [
+        _r("Far", 100.0, 90.0, True),
+        _r("Near", 99.0, 46.0, True),
+    ]
+    out = mcts_service._apply_adp_margin_tie_break(results, next_turn_pick_no=40)
+    assert out[0]["name"] == "Near"
+
+
 def test_unmatched_candidate_never_wins_the_tie_break():
     """
     CHUNK 24 explicit design decision: a candidate with no real market_adp

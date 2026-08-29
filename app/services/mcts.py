@@ -236,6 +236,25 @@ calling them "at risk" over a matched peer) -- see
 reasoning. Does not touch reward computation, rollout depth, or the
 opponent model -- purely a re-ordering of `recommend()`'s already-computed
 output.
+
+CHUNK 60 FIX -- SIGNED MARGIN -> ABSOLUTE DISTANCE: the Chunk 24 wording
+above ("smallest real-market-ADP margin") was implemented as a SIGNED
+`adp - next_turn_pick_no`, so `min()` preferred whichever tied candidate
+was the *most overdue* (real ADP furthest BELOW the next turn), without
+bound. That is wrong for an extremely-overdue candidate: a player whose
+real ADP is far below even the CURRENT pick has already fallen way past
+the market's expectation, so "more overdue" is not "more at risk" -- if
+anything the ADP signal is least informative there. Chunk 41 point 2
+(seed2 / pick 54) is the canonical case: Drake Maye (real ADP 7.0, next
+turn pick 67) won the tie-break over Davante Adams (real ADP 51.8, ~52%
+Monte-Carlo survival, and the higher raw mcts_score of the two) purely
+because 7 - 67 = -60 is more negative than 51.8 - 67 = -15.2. The
+tie-break now ranks on ABSOLUTE distance `abs(adp - next_turn_pick_no)`
+-- "whose real ADP sits closest to my next turn, in either direction" --
+so the genuinely-on-the-bubble candidate wins and a wildly-overdue one
+no longer beats it. Still a pure re-ordering; nothing else about Chunk
+24's design (which candidates are eligible, the no-match fallback, the
+"never demote the leader below where it already was" property) changes.
 """
 
 from __future__ import annotations
@@ -643,11 +662,21 @@ def _apply_adp_margin_tie_break(top_results: list[dict[str, Any]], next_turn_pic
     among candidates already flagged `within_noise_of_leader` (this call's
     own statistical near-tie, at ITS actual iteration budget -- not a
     claim that a much more expensive analysis would also find them tied),
-    promotes whichever has the SMALLEST real-market-ADP margin to
-    `next_turn_pick_no` (i.e., most at risk of being gone if left for
-    later) to the front. Every candidate's own mcts_score/vbd_score/etc
-    stay exactly as computed -- this never changes WHAT was found, only
-    WHICH tied candidate gets presented as the top pick.
+    promotes whichever tied candidate's real market ADP sits CLOSEST (by
+    absolute distance) to `next_turn_pick_no` -- i.e. the one most
+    genuinely on the bubble of being gone before the user picks again --
+    to the front. Every candidate's own mcts_score/vbd_score/etc stay
+    exactly as computed -- this never changes WHAT was found, only WHICH
+    tied candidate gets presented as the top pick.
+
+    CHUNK 60 FIX -- this distance is ABSOLUTE, not the signed `adp -
+    next_turn_pick_no` originally shipped. Signed + `min()` preferred the
+    *most overdue* candidate without bound (real ADP furthest below the
+    next turn), which mishandles an extremely-overdue candidate: one
+    already fallen far past the market's expectation is not "more at
+    risk," the ADP signal is just least informative there. See the module
+    docstring's CHUNK 60 FIX section for the Chunk 41 point 2
+    (Maye/Adams) case this corrects.
 
     NO-MATCH FALLBACK (an explicit design decision, not an oversight): a
     candidate with no real `market_adp` (roughly 78% of the pool, per
@@ -670,15 +699,20 @@ def _apply_adp_margin_tie_break(top_results: list[dict[str, Any]], next_turn_pic
     if len(tied) < 2:
         return top_results  # no real tie to break
 
-    def _margin(r: dict[str, Any]) -> Optional[float]:
+    def _risk_distance(r: dict[str, Any]) -> Optional[float]:
+        # CHUNK 60 FIX: absolute distance to the user's next turn, in
+        # either direction -- not the old signed `adp - next_turn_pick_no`
+        # (which `min()` turned into "prefer the most overdue candidate,
+        # unboundedly"). See this function's / the module's CHUNK 60 FIX
+        # notes.
         adp = r.get("market_adp")
-        return (adp - next_turn_pick_no) if adp is not None else None
+        return abs(adp - next_turn_pick_no) if adp is not None else None
 
-    matched_tied = [r for r in tied if _margin(r) is not None]
+    matched_tied = [r for r in tied if _risk_distance(r) is not None]
     if not matched_tied:
         return top_results  # no real-ADP signal for ANY tied candidate -- unchanged
 
-    preferred = min(matched_tied, key=_margin)
+    preferred = min(matched_tied, key=_risk_distance)
     if preferred is leader:
         return top_results  # already in front, nothing to reorder
 

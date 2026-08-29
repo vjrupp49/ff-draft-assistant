@@ -93,7 +93,7 @@ KIDDOS = LeagueConfig(
     num_teams=10,
     draft_type="snake",
     pick_timer_seconds=60,  # confirmed via the live Sleeper API, Chunk 51
-    draft_date="2026-09-07",  # confirmed via the live Sleeper API, Chunk 51 (2026-09-06 19:00 Pacific / 2026-09-07 02:00 UTC)
+    draft_date="2026-09-06",  # 2026-09-06 21:00 Pacific -- CONFIRMED by Vincent directly in the Sleeper app (Chunk 51's "2026-09-07 / 7pm PT" was a UTC/estimate error; corrected Chunk 60)
     scoring=dict(_SUPERFLEX_TE_PREMIUM_SCORING),
     roster_positions=list(_STANDARD_SUPERFLEX_ROSTER),
 )
