@@ -226,6 +226,41 @@ pinned) against today's freshly-refreshed live data:
   - Picks 39/79/102/122: pick 102 also drifted (Matthew Stafford ->
     Sam Darnold, all three fields) but that is pure DATA drift --
     identical on the Chunk-41 commit. 39/79/122 still match their pins.
+
+CHUNK 62 UPDATE -- BATCH-DECOUPLED SE IN _adaptively_resolve_tie (Chunk 61
+root-caused "Track B" to that pass falsely resolving genuine near-ties
+with an overconfident within-run Welford stderr; Chunk 62 replaces it
+with a between-batch SE -- 6 independent 100-iteration batches, SE from
+the scatter of the per-batch means. See app/services/mcts.py's CHUNK 62
+FIX section). This moves FOUR pins here -- all CODE-DRIVEN, confirmed by a
+git-stash negative control (OLD mcts.py matches every one of these on
+today's data; the new estimator is the only thing that changes them). No
+new failure is a Track B regression -- in every case the tied group is
+dominated by would-start players and the change moves toward a
+higher-value or genuinely-on-the-bubble pick:
+
+  - Pick 59: same winner (Zay Flowers); adp_tie_break_applied False -> True.
+    Honest SE keeps {Flowers, Goff} tied instead of falsely resolving to
+    Flowers, so the ADP tie-break runs -- and picks Flowers anyway.
+
+  - Pick 79: winner Courtland Sutton -> Tony Pollard. OLD falsely resolved
+    to Sutton alone; honest SE keeps a 4-way tie (Pollard/Sutton/Meyers/
+    RJ Harvey, ALL would-start, Pollard & Sutton dead even on score). ADP
+    tie-break picks Pollard, whose real ADP (82.9) is right on the next
+    turn (82). Consistent with Chunk 60's abs-distance rule.
+
+  - Pick 82: same winner (Tony Pollard); adp_tie_break_applied True ->
+    False. Pollard's lead over Sutton clears the honest SE bar, so
+    adaptive resolution resolves him directly and the tie-break is
+    skipped. OLD reached Pollard via the tie-break.
+
+  - Pick 102: winner Sam Darnold -> Zach Charbonnet. This is an
+    IMPROVEMENT -- OLD falsely resolved to Sam Darnold (a would_start=False
+    QB with a LOWER base mcts_score than Charbonnet), the exact
+    false-confidence failure Chunk 62 targets. Honest SE keeps the 3-way
+    tie; Charbonnet (would_start=True RB, highest base score) stays leader.
+
+  - Picks 39/122: unchanged, re-verified.
 """
 from __future__ import annotations
 
@@ -315,12 +350,41 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
         # (seeds 2/3 land on D'Andre Swift) -- if live data drift flips
         # Flowers/Goff back this may need re-examination, but pinning to
         # today's real seed=1 behavior is correct per this file's practice.
-        (59, "Zay Flowers", True, False),
-        (79, "Courtland Sutton", True, False),  # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick behaves identically under pure Chunk 38 code today; the live projections/ADP data has simply moved since Chunk 38's original pins -- see module docstring's CHUNK 39 CORRECTION. CHUNK 60: re-verified, still matches under today's data on both pre-Chunk-60 and post-fix code.
-        (39, "Kyren Williams", True, False),   # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick ALSO resolves cleanly to Kyren Williams under pure Chunk 38 code today, unrelated to this chunk's fix -- see module docstring's CHUNK 39 CORRECTION. CHUNK 60: still matches (Chunk 59's report saw a transient "Jared Goff" here; the live data moved back before this chunk's run -- confirmed identical to the pin on BOTH the Chunk-41 commit and post-Chunk-60 code with today's data).
-        (82, "Tony Pollard", True, True),  # CHUNK 60 RE-PIN -- CODE-DRIVEN by this chunk's ADP-margin fix (NOT data drift). Was (Courtland Sutton, True, True). Post-fix the tied group {Pollard 2139.5, Sutton 2140.7} (both within_noise) is broken by ABSOLUTE distance to next turn (99): Pollard |82.9-99|=16.1 beats Sutton |79.8-99|=19.2, so Pollard is promoted (adp_tie_break_applied True). Under the old SIGNED margin, min(-16.1, -19.2) picked Sutton, who was already the leader -> no reorder (adp_tie_break_applied was False). Confirmed via git-stash: pre-fix code + today's data gives Sutton/False; post-fix gives Pollard/True. Both candidates are legitimate at-risk near-ties; low-stakes flip, flagged in the Chunk 60 report.
-        (102, "Sam Darnold", True, False),  # CHUNK 60 RE-PIN -- DATA DRIFT, not code-driven. Was (Matthew Stafford, False, False); all three fields drifted. Confirmed code-independent: a git worktree at commit 0250519 (Chunk 41, when this was last pinned) run against today's freshly-refreshed projections/ADP data ALSO gives Sam Darnold / adaptive=True / adp_tie_break=False, identical to post-Chunk-60 code. The live data simply moved (the cache TTL expired between the Chunk 59 run and this one).
-        (122, "Matthew Stafford", False, False),  # CHUNK 38: still resolves decisively after the base 150 iterations -- unaffected by Chunk 39. CHUNK 60: re-verified, still matches under today's data.
+        # CHUNK 62 RE-PIN -- CODE-DRIVEN (git-stash negative control: OLD mcts.py
+        # matches every pin below on today's data; the new batch-decoupled SE in
+        # _adaptively_resolve_tie is what moves them). Same top name (Zay Flowers),
+        # but adp_tie_break_applied flips False -> True: the honest between-batch SE
+        # now leaves {Zay Flowers, Jared Goff} genuinely tied instead of falsely
+        # resolving to Flowers, so the ADP-margin tie-break (Chunk 60, abs-distance)
+        # runs -- and picks Flowers anyway (|41.8-62|=20.2 < Goff's |24.9-62|=37.1).
+        # Same winner, mechanism now the designed one. See the module docstring's
+        # CHUNK 62 UPDATE.
+        (59, "Zay Flowers", True, True),
+        # CHUNK 62 RE-PIN -- CODE-DRIVEN. Winner Courtland Sutton -> Tony Pollard.
+        # OLD adaptive resolution falsely resolved this to Sutton alone; the honest
+        # SE keeps a 4-way tie {Pollard, Sutton, Meyers, RJ Harvey} -- ALL four
+        # would-start (not a Track B bench-over-starter case) -- and Pollard/Sutton
+        # are dead even on mcts_score. Falls through to the ADP-margin tie-break,
+        # which picks Pollard: his real ADP (82.9) sits almost exactly on the next
+        # turn (82), |diff|=0.9, the single most on-the-bubble candidate. Consistent
+        # with Chunk 60's abs-distance decision. See CHUNK 62 UPDATE.
+        (79, "Tony Pollard", True, True),
+        (39, "Kyren Williams", True, False),   # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick ALSO resolves cleanly to Kyren Williams under pure Chunk 38 code today, unrelated to this chunk's fix -- see module docstring's CHUNK 39 CORRECTION. CHUNK 60/62: still matches on both OLD and new code with today's data.
+        # CHUNK 62 RE-PIN -- CODE-DRIVEN. Same winner (Tony Pollard), adp_tie_break_applied
+        # flips True -> False: the {Pollard, Sutton} gap here is real enough to clear
+        # the honest between-batch SE bar, so adaptive resolution now resolves to
+        # Pollard directly and the ADP tie-break is skipped (adaptive_fully_resolved).
+        # OLD reached the same winner via the tie-break. See CHUNK 62 UPDATE.
+        (82, "Tony Pollard", True, False),
+        # CHUNK 62 RE-PIN -- CODE-DRIVEN, and an IMPROVEMENT. Winner Sam Darnold ->
+        # Zach Charbonnet. OLD adaptive resolution falsely resolved to Sam Darnold
+        # -- a would_start=False QB with a LOWER base mcts_score than Charbonnet --
+        # a textbook false-confidence resolution. The honest SE keeps the 3-way tie
+        # {Charbonnet, Stafford, Darnold}; Charbonnet (would_start=True RB, highest
+        # base score) stays leader and the ADP tie-break doesn't move him
+        # (|141.1-119|=22.1, closest to the next turn). See CHUNK 62 UPDATE.
+        (102, "Zach Charbonnet", True, False),
+        (122, "Matthew Stafford", False, False),  # CHUNK 38: still resolves decisively after the base 150 iterations -- unaffected by Chunk 39. CHUNK 60/62: re-verified, still matches under today's data.
     ],
 )
 def test_adaptive_resolution_replay_matches_expected_behavior(

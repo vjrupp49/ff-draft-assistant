@@ -145,19 +145,48 @@ within 100-600 iterations; the groups with a genuinely-tied CORE (picks
 finding that some of these differences are real but too small to ever
 resolve at any practical budget (e.g. pick 59's Kamara-vs-McLaurin gap
 needed an EXTRAPOLATED ~30,000 iterations to reach z=2, per its measured
-z=0.63 at 3000). ADAPTIVE_RESOLUTION_MAX_ITERATIONS=600 (4 batches of
-ADAPTIVE_RESOLUTION_BATCH_SIZE=150, the existing ITERATIONS default) is
-chosen to comfortably catch the resolvable class within its budget while
-NOT chasing the unresolvable class further -- those are meant to fall
-through to the ADP tie-break, not a shortfall of this pass. Added
-wall-clock cost is real and not hand-waved: roughly another 0.5-4s on top
-of the existing ~1.5-2s baseline call, only when a tie actually exists
-(13/15 real picks in Chunk 22's dry run had one) -- still comfortably
-inside the existing 20s RUNTIME_CEILING_SECONDS tripwire (see
-test_runtime_budget.py) and the two-tier live-recompute design's existing
-"a few seconds" tolerance for its EXPENSIVE tier (app/services/draft_live.py,
-Chunks 11-12), which is the only place `recommend()` runs at full
-iteration count during a live draft.
+z=0.63 at 3000). ADAPTIVE_RESOLUTION_MAX_ITERATIONS=600 is chosen to
+comfortably catch the resolvable class within its budget while NOT chasing
+the unresolvable class further -- those are meant to fall through to the
+ADP tie-break, not a shortfall of this pass. Added wall-clock cost is real
+and not hand-waved: roughly another 0.5-4s on top of the existing ~1.5-2s
+baseline call, only when a tie actually exists (13/15 real picks in Chunk
+22's dry run had one) -- still comfortably inside the existing 20s
+RUNTIME_CEILING_SECONDS tripwire (see test_runtime_budget.py) and the
+two-tier live-recompute design's existing "a few seconds" tolerance for
+its EXPENSIVE tier (app/services/draft_live.py, Chunks 11-12), which is the
+only place `recommend()` runs at full iteration count during a live draft.
+
+CHUNK 62 FIX -- BETWEEN-BATCH STANDARD ERROR (the confidence, not the
+search): Chunk 61 root-caused "Track B" (the model taking a safe bench
+player over an at-risk would-start player who fills a real roster need)
+NOT to a wait-value or backfill logic error -- the rollout correctly
+recovers the at-risk player when it survives, and these decisions are
+genuine near-ties in which the at-risk player is usually the marginally
+better pick -- but to THIS pass falsely resolving those near-ties with
+overconfident statistics. Instrumented at the pinned pt0 case (seed 3,
+pick 87, Pollard RB vs Meyers WR): the base search correctly reported a
+tie (gap 0.4), then this pass drove the reported Welford z from ~0 to
+6.13 over its 600 iterations. 20 INDEPENDENT 600-iteration reseeds of the
+same {Pollard, Meyers} group showed the true gap distribution was mean
+-18.7 (Meyers FAVORED), sd 29.1, sign-unstable -- true signal-to-noise
+0.64, not z 6. The within-run Welford stderr a single continuous search
+produces shrinks with iteration count regardless of how much a different
+rng seed would move the answer; for these near-ties it understated the
+real realization-to-realization noise by 3-7x (matching Chunk 44's
+standalone finding that recommend()'s Welford stderr underestimates true
+between-seed variance up to 3.4x for one candidate; the branch COMPARISON
+compounds it). FIX: `_adaptively_resolve_tie` now runs the same 600
+budget as 6 INDEPENDENT batches of 100 -- each its own tree and its own
+rng stream -- and takes each candidate's standard error from the SCATTER
+OF THE PER-BATCH MEANS (the actual realization noise), via
+`_BatchMeansEstimate`. Point estimates barely move; the SE becomes
+honest, so a coin-flip near-tie now correctly stays "within noise" and
+falls through to the ADP-margin tie-break (which, post-Chunk-60, favours
+the genuinely soonest-at-risk candidate -- resolving Track B toward the
+at-risk starter). Genuinely-separated groups still resolve (their
+between-batch SE is small relative to a real gap). Worst-case wall-clock
+is unchanged (still 600 iterations); the batches are not run in parallel.
 
 CHUNK 21 FINDING -- "WAIT VALUE" WAS ALREADY A CONCEPT HERE, JUST FED BAD
 DATA: user feedback after a live draft (Chunk 19) described two symptoms --
@@ -327,13 +356,24 @@ UCB_EXPLORATION = 1.8
 NEAR_TIE_Z = 1.5
 
 # CHUNK 26 -- see module docstring's CHUNK 26 FIX / BUDGET CALIBRATION
-# sections for the full reasoning and the calibration data behind these
-# two numbers. BATCH_SIZE reuses the existing, already-tuned ITERATIONS
-# default rather than inventing a new unit; MAX_ITERATIONS (4 batches) is
-# sized to catch genuinely-resolvable budget-dilution ties without chasing
-# genuinely-tied ones past the point of diminishing returns.
-ADAPTIVE_RESOLUTION_BATCH_SIZE = 150
+# sections. CHUNK 62 -- these two numbers now mean "6 INDEPENDENT batches
+# of 100 iterations each" (was one continuous 600-iteration search checked
+# every 150). `_adaptively_resolve_tie` runs each batch as its own tree +
+# its own rng stream and takes the tie-resolution standard error from the
+# SCATTER OF THE PER-BATCH MEANS -- the actual realization-to-realization
+# noise -- instead of a single run's within-run Welford stderr, which
+# Chunk 61 showed underestimates that noise 3-7x for genuine near-ties
+# (making this pass "confidently" resolve coin-flips). MAX/BATCH still sum
+# to 600; the wall-clock cost is unchanged in the worst case. See the
+# module docstring's CHUNK 62 FIX section.
+ADAPTIVE_RESOLUTION_BATCH_SIZE = 100
 ADAPTIVE_RESOLUTION_MAX_ITERATIONS = 600
+# Don't let a genuine near-tie early-stop on a few flukily-close batch
+# means -- require at least this many independent batches before the
+# resolved-leader check is consulted, so the between-batch stdev it rests
+# on has enough samples to be stable (a real separation still clears it by
+# batch 4-5; a real tie never does and burns the full budget).
+ADAPTIVE_RESOLUTION_MIN_BATCHES_FOR_EARLY_STOP = 4
 
 
 class _RewardStats:
@@ -719,6 +759,69 @@ def _apply_adp_margin_tie_break(top_results: list[dict[str, Any]], next_turn_pic
     return [preferred] + [r for r in top_results if r is not preferred]
 
 
+class _BatchMeansEstimate:
+    """
+    CHUNK 62 -- a candidate's resolved estimate from `_adaptively_resolve_tie`'s
+    independent batches. `mean_value` is the unweighted mean of the per-batch
+    means; `stderr` is the BETWEEN-BATCH standard error (sample stdev of the
+    per-batch means / sqrt(n_batches)), which measures true
+    realization-to-realization noise. This is the whole point of the Chunk 62
+    change: a single continuous 600-iteration search's within-run Welford
+    stderr shrinks toward 0 as it iterates regardless of how much the answer
+    would move under a different rng seed -- Chunk 61 measured it
+    underestimating the real noise 3-7x for genuine near-ties, which let this
+    pass report z~6 "confidence" on what 20 independent reseeds showed was a
+    coin-flip. Duck-types the (mean_value, stderr, visits) subset of `_Node`
+    that `recommend()` reads back from this function.
+    """
+
+    __slots__ = ("mean_value", "stderr", "visits")
+
+    def __init__(self, mean_value: float, stderr: Optional[float], visits: int):
+        self.mean_value = mean_value
+        self.stderr = stderr
+        self.visits = visits
+
+
+def _batch_means_estimates(
+    batch_means: dict[str, list[float]], batch_visits: dict[str, list[int]]
+) -> dict[str, _BatchMeansEstimate]:
+    """Fold per-batch means into one `_BatchMeansEstimate` per candidate (see that class)."""
+    out: dict[str, _BatchMeansEstimate] = {}
+    for pid, means in batch_means.items():
+        if not means:
+            continue
+        se = (
+            float(np.std(means, ddof=1) / math.sqrt(len(means)))
+            if len(means) >= 2
+            else None
+        )
+        out[pid] = _BatchMeansEstimate(float(np.mean(means)), se, int(sum(batch_visits[pid])))
+    return out
+
+
+def _resolved_to_single_leader(estimates: dict[str, _BatchMeansEstimate]) -> bool:
+    """
+    True once exactly one candidate is NOT within `NEAR_TIE_Z` combined
+    (between-batch) standard errors of the current leader -- the same
+    near-tie test `within_noise_of_leader` uses everywhere else, just fed
+    the honest SE. A genuine near-tie never trips this: its between-batch
+    SE stays large relative to the gap no matter how many batches run.
+    """
+    ests = list(estimates.values())
+    if len(ests) < 2:
+        return True
+    leader = max(ests, key=lambda e: e.mean_value)
+    leader_se = leader.stderr or 0.0
+    still_tied = 0
+    for e in ests:
+        e_se = e.stderr or 0.0
+        combined_se = (leader_se**2 + e_se**2) ** 0.5
+        if e is leader or (combined_se > 0 and (leader.mean_value - e.mean_value) <= NEAR_TIE_Z * combined_se):
+            still_tied += 1
+    return still_tied <= 1
+
+
 def _adaptively_resolve_tie(
     draft_state: DraftState,
     players_by_id: dict[str, dict[str, Any]],
@@ -733,58 +836,65 @@ def _adaptively_resolve_tie(
     percentile_lookup: dict[str, float],
     batch_size: int = ADAPTIVE_RESOLUTION_BATCH_SIZE,
     max_iterations: int = ADAPTIVE_RESOLUTION_MAX_ITERATIONS,
-) -> tuple[dict[str, "_Node"], int]:
+) -> tuple[dict[str, _BatchMeansEstimate], int]:
     """
     CHUNK 26 -- see module docstring's CHUNK 26 FIX section for the full
     root-cause evidence. Gives ONLY `tied_player_ids` a fresh, dedicated
-    MCTS search (a new root whose `untried` list is exactly this group --
-    the same real, unmodified `_run_iteration` production uses, not a
-    reimplementation) instead of the diluted share they'd get competing
-    against up to CANDIDATE_BREADTH-1 other root candidates for
-    `recommend()`'s normal ITERATIONS budget. Runs in `batch_size`-sized
-    chunks up to `max_iterations`, checking after every batch whether the
-    group has resolved -- using the EXACT SAME near-tie definition
-    `within_noise_of_leader` uses everywhere else (NEAR_TIE_Z), not a
-    separate/inconsistent threshold -- and stopping early once only one
-    candidate remains "not within noise" of the current leader (nothing
-    left to resolve further). Returns ({player_id: _Node}, iterations_used)
-    so the caller can both read the sharper estimates AND report how much
-    extra work this call actually did.
+    MCTS search over the same real, unmodified `_run_iteration` production
+    uses, instead of the diluted share they'd get competing against up to
+    CANDIDATE_BREADTH-1 other root candidates for `recommend()`'s normal
+    ITERATIONS budget.
+
+    CHUNK 62 -- runs the `max_iterations` budget as
+    `max_iterations // batch_size` INDEPENDENT batches: each batch is its
+    own fresh `_Node` tree AND its own rng stream (seeded from `rng`, so the
+    whole call stays reproducible from `recommend()`'s outer seed). Each
+    candidate's resolved estimate (`_BatchMeansEstimate`) then takes its
+    standard error from the SCATTER OF THE PER-BATCH MEANS -- the real
+    realization-to-realization noise -- not a single continuous search's
+    within-run Welford stderr. Chunk 61 showed the latter underestimates
+    that noise 3-7x for genuine near-ties (e.g. pt0 seed 3: reported z 6.1
+    vs a true signal-to-noise of 0.64 across 20 independent reseeds), which
+    is exactly what let this pass "confidently" resolve Track B coin-flips.
+
+    Early-stops only once there are >= ADAPTIVE_RESOLUTION_MIN_BATCHES_FOR_
+    EARLY_STOP batches AND `_resolved_to_single_leader` holds by the
+    between-batch SE -- a genuine near-tie never clears that and burns the
+    full budget confirming it's a tie (then falls through to the ADP-margin
+    tie-break, per the CHUNK 26 design). Returns ({player_id:
+    _BatchMeansEstimate}, iterations_used).
 
     `percentile_lookup` (CHUNK 39): the same stable table `recommend()`
     built once for its own main search -- threaded through unchanged so
-    this dedicated re-search uses the identical percentile reference
-    frame, not a fresh/inconsistent one.
+    this dedicated re-search uses the identical percentile reference frame.
     """
-    root = _Node(draft_state, depth=0, player_id=None, parent=None, untried=list(tied_player_ids))
-    reward_stats = _RewardStats()
+    num_batches = max(1, max_iterations // batch_size)
+    batch_means: dict[str, list[float]] = {pid: [] for pid in tied_player_ids}
+    batch_visits: dict[str, list[int]] = {pid: [] for pid in tied_player_ids}
     done = 0
-    while done < max_iterations:
-        batch = min(batch_size, max_iterations - done)
-        for _ in range(batch):
+
+    for b in range(num_batches):
+        batch_rng = np.random.default_rng(int(rng.integers(0, 2**63 - 1)))
+        root = _Node(draft_state, depth=0, player_id=None, parent=None, untried=list(tied_player_ids))
+        reward_stats = _RewardStats()
+        for _ in range(batch_size):
             _run_iteration(
-                root, reward_stats, players_by_id, adp_ranks, rng,
+                root, reward_stats, players_by_id, adp_ranks, batch_rng,
                 tree_depth, candidate_breadth, rollout_extra_picks, rollout_sim_count, risk_aversion,
                 percentile_lookup,
             )
-        done += batch
+        done += batch_size
+        for pid in tied_player_ids:
+            child = root.children.get(pid)
+            if child is not None and child.visits > 0:
+                batch_means[pid].append(child.mean_value)
+                batch_visits[pid].append(child.visits)
 
-        children = list(root.children.values())
-        if len(children) < 2:
-            break
-        leader_node = max(children, key=lambda c: c.mean_value)
-        leader_se = leader_node.stderr or 0.0
-        still_tied = 0
-        for c in children:
-            c_se = c.stderr or 0.0
-            combined_se = (leader_se**2 + c_se**2) ** 0.5
-            margin = leader_node.mean_value - c.mean_value
-            if c is leader_node or (combined_se > 0 and margin <= NEAR_TIE_Z * combined_se):
-                still_tied += 1
-        if still_tied <= 1:
-            break
+        if b + 1 >= ADAPTIVE_RESOLUTION_MIN_BATCHES_FOR_EARLY_STOP:
+            if _resolved_to_single_leader(_batch_means_estimates(batch_means, batch_visits)):
+                break
 
-    return root.children, done
+    return _batch_means_estimates(batch_means, batch_visits), done
 
 
 def recommend(
