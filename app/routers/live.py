@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from app.config import NUM_TEAMS
@@ -33,6 +33,14 @@ class StartLiveRequest(BaseModel):
         ge=0,
         description="Run the full Draft Score recompute once picks-until-your-turn drops to this many (0 = only on your exact turn).",
     )
+    watch_draft_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "\"Sleeper Mock\" watch mode: poll THIS Sleeper draft (one you started yourself) instead of "
+            "your real league draft. Omit for the normal live path. Validated read-only via "
+            "/api/live/inspect-draft first -- can't be a real league draft or an already-finished one."
+        ),
+    )
 
 
 class StartMockRequest(StartLiveRequest):
@@ -41,11 +49,36 @@ class StartMockRequest(StartLiveRequest):
     mcts_iterations: int = Field(default=mcts_service.ITERATIONS, ge=1, le=1000)
 
 
+@router.get("/api/live/inspect-draft")
+async def inspect_draft(
+    draft_id: str = Query(..., description="Sleeper draft ID to pre-check for the 'Sleeper Mock' watch mode"),
+    my_slot: Optional[int] = Query(default=None, ge=1, description="Override the auto-detected slot"),
+) -> dict[str, Any]:
+    """Read-only pre-flight: is this Sleeper mock watchable, which slot is mine, any format warnings."""
+    return await draft_live.inspect_sleeper_draft(draft_id, my_slot_override=my_slot)
+
+
 @router.post("/api/live/start-live")
 async def start_live(request: StartLiveRequest) -> dict[str, Any]:
     manager = draft_live.get_manager()
+    session_warnings: list[str] = []
+    num_teams = request.num_teams
+    my_slot = request.my_slot
+
+    if request.watch_draft_id:
+        info = await draft_live.inspect_sleeper_draft(request.watch_draft_id, my_slot_override=request.my_slot)
+        if not info.get("ok"):
+            raise HTTPException(status_code=400, detail=info.get("error") or "That draft can't be watched.")
+        num_teams = info["num_teams"]
+        my_slot = info["my_slot"]
+        session_warnings = info.get("format_warnings") or []
+
     await manager.start_live(
-        my_slot=request.my_slot, num_teams=request.num_teams, expensive_threshold=request.expensive_threshold
+        my_slot=my_slot,
+        num_teams=num_teams,
+        expensive_threshold=request.expensive_threshold,
+        watch_draft_id=request.watch_draft_id,
+        session_warnings=session_warnings,
     )
     return manager.snapshot()
 

@@ -1008,6 +1008,10 @@
   var mockOptions = document.getElementById("mock-options");
   var mockSeedInput = document.getElementById("mock-seed");
   var mockDelayInput = document.getElementById("mock-delay");
+  var sleeperMockOptions = document.getElementById("sleeper-mock-options");
+  var sleeperDraftIdInput = document.getElementById("sleeper-draft-id");
+  var checkDraftBtn = document.getElementById("check-draft-btn");
+  var sleeperMockInfo = document.getElementById("sleeper-mock-info");
   var startBtn = document.getElementById("start-btn");
   var setupError = document.getElementById("setup-error");
 
@@ -1040,11 +1044,43 @@
 
   modeButtons.forEach(function (btn) {
     btn.addEventListener("click", function () {
-      modeButtons.forEach(function (b) { b.classList.remove("active"); });
+      if (!btn.dataset.mode) return; // the "Check" button reuses .mode-btn styling but isn't a mode
+      modeButtons.forEach(function (b) { if (b.dataset.mode) b.classList.remove("active"); });
       btn.classList.add("active");
       selectedMode = btn.dataset.mode;
       mockOptions.classList.toggle("hidden", selectedMode !== "mock");
+      sleeperMockOptions.classList.toggle("hidden", selectedMode !== "sleeper_mock");
+      sleeperMockInfo.classList.add("hidden");
     });
+  });
+
+  function showSleeperInfo(text, isErr) {
+    sleeperMockInfo.textContent = text;
+    sleeperMockInfo.classList.remove("hidden");
+    sleeperMockInfo.classList.toggle("setup-note-err", !!isErr);
+  }
+
+  checkDraftBtn.addEventListener("click", function () {
+    var id = (sleeperDraftIdInput.value || "").trim();
+    if (!id) { showSleeperInfo("Paste a Sleeper draft ID first (it's the number in sleeper.com/draft/nfl/…).", true); return; }
+    checkDraftBtn.disabled = true;
+    checkDraftBtn.textContent = "…";
+    fetch("/api/live/inspect-draft?draft_id=" + encodeURIComponent(id))
+      .then(function (r) { return r.json(); })
+      .then(function (info) {
+        if (!info || !info.ok) { showSleeperInfo((info && info.error) || "That draft can't be watched.", true); return; }
+        if (info.my_slot) mySlotInput.value = info.my_slot;
+        var lines = [
+          "✓ Found it · status: " + info.status + " · " + info.num_teams + " teams · "
+            + (info.num_picks_so_far || 0) + " picks in",
+          "Your slot: " + info.my_slot + (info.my_slot_source === "draft_order" ? " (from Sleeper)" : " (you set this)"),
+        ];
+        (info.format_warnings || []).forEach(function (w) { lines.push("⚠ " + w); });
+        if (!(info.format_warnings || []).length) lines.push("Format matches your league — recommendations calibrated correctly.");
+        showSleeperInfo(lines.join("\n"), false);
+      })
+      .catch(function () { showSleeperInfo("Couldn't reach the app to check that draft.", true); })
+      .finally(function () { checkDraftBtn.disabled = false; checkDraftBtn.textContent = "Check"; });
   });
 
   startBtn.addEventListener("click", function () {
@@ -1054,17 +1090,27 @@
       showSetupError("Enter a valid draft slot.");
       return;
     }
+    var path = selectedMode === "mock" ? "/api/live/start-mock" : "/api/live/start-live";
+    var body;
+    if (selectedMode === "mock") {
+      body = {
+        my_slot: mySlot,
+        seed: parseInt(mockSeedInput.value, 10) || 1,
+        delay_seconds: parseFloat(mockDelayInput.value) || 1.5,
+      };
+    } else if (selectedMode === "sleeper_mock") {
+      var did = (sleeperDraftIdInput.value || "").trim();
+      if (!did) {
+        showSetupError("Paste your Sleeper draft ID and hit Check first.");
+        return;
+      }
+      body = { my_slot: mySlot, watch_draft_id: did };
+    } else {
+      body = { my_slot: mySlot };
+    }
+
     startBtn.disabled = true;
     startBtn.textContent = "Starting...";
-
-    var path = selectedMode === "mock" ? "/api/live/start-mock" : "/api/live/start-live";
-    var body = selectedMode === "mock"
-      ? {
-          my_slot: mySlot,
-          seed: parseInt(mockSeedInput.value, 10) || 1,
-          delay_seconds: parseFloat(mockDelayInput.value) || 1.5,
-        }
-      : { my_slot: mySlot };
 
     fetch(path, {
       method: "POST",
@@ -1169,7 +1215,16 @@
   // ---- rendering ----
 
   function applySnapshot(s) {
-    if (s.mode) sessionPill.textContent = s.mode === "mock" ? "MOCK DRAFT" : "LIVE DRAFT";
+    if (s.mode) {
+      sessionPill.textContent = s.mode === "mock" ? "MOCK DRAFT"
+        : s.mode === "sleeper_mock" ? "SLEEPER MOCK" : "LIVE DRAFT";
+      if (s.session_warnings && s.session_warnings.length) {
+        sessionPill.textContent += " ⚠";
+        sessionPill.title = "Format differs from your league:\n" + s.session_warnings.join("\n");
+      } else {
+        sessionPill.title = "";
+      }
+    }
     updateHeadline(s);
     if (s.last_pick_event) renderFeedFromEvent(s.last_pick_event);
     if (s.last_draft_score) applyDraftScore(s.last_draft_score, true);

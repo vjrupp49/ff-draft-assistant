@@ -571,6 +571,23 @@ html, body {
 
 .mock-options { margin-top: -0.2rem; }
 
+.sleeper-mock-options { margin-top: -0.2rem; gap: 0.5rem; }
+.sleeper-mock-options .mode-btn { flex: none; width: auto; padding: 0.65rem 0.9rem; }
+
+.setup-note {
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-1);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-mid);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+.setup-note-err { color: var(--danger); border-color: var(--danger); }
+
 .start-btn {
   width: 100%;
   margin-top: 0.5rem;

@@ -50,6 +50,7 @@
         <div class="setup-row setup-mode">
           <button class="mode-btn active" data-mode="live">Live Draft</button>
           <button class="mode-btn" data-mode="mock">Watch Mock Draft</button>
+          <button class="mode-btn" data-mode="sleeper_mock">Sleeper Mock</button>
         </div>
 
         <div id="mock-options" class="setup-row mock-options hidden">
@@ -58,6 +59,13 @@
           <label class="setup-label">Pace (sec/pick)</label>
           <input id="mock-delay" type="number" min="0" max="10" step="0.5" value="1.5" class="setup-input setup-input-sm" />
         </div>
+
+        <div id="sleeper-mock-options" class="setup-row sleeper-mock-options hidden">
+          <label class="setup-label">Sleeper draft ID</label>
+          <input id="sleeper-draft-id" type="text" placeholder="from sleeper.com/draft/nfl/…" class="setup-input" />
+          <button id="check-draft-btn" type="button" class="mode-btn">Check</button>
+        </div>
+        <div id="sleeper-mock-info" class="setup-note hidden"></div>
 
         <button id="start-btn" class="start-btn">Start Watching</button>
         <div id="setup-error" class="setup-error hidden"></div>

@@ -35,9 +35,19 @@ not rebuilt):
 TWO DRIVERS feed picks into the SAME tiered pipeline, deliberately not two
 separate systems (same principle draft_state.py itself established in
 Chunk 4 for hypothetical-vs-live construction):
-  - LIVE: polls the real Sleeper draft (app.services.sleeper), same
+  - LIVE: polls a Sleeper draft (app.services.sleeper) by draft_id, same
     poll-and-dedupe-by-pick_no approach as the original Chunk 1 /ws/draft
-    endpoint.
+    endpoint. `start_live(watch_draft_id=None)` polls SLEEPER_DRAFT_ID
+    (the real active-league draft) -- unchanged. `watch_draft_id=<id>` is
+    the "Sleeper Mock" watch mode: point the exact same driver at a
+    separate Sleeper mock draft the user started themselves, so they can
+    click picks on Sleeper and get live recommendations here. The mock
+    draft is validated read-only first (`inspect_sleeper_draft`): it
+    can't be a real league draft, can't be already finished, and the
+    user's slot / the real team count come from the draft's own
+    `draft_order` / `settings`. A format mismatch (not SUPERFLEX, wrong
+    team count) is a non-blocking warning -- picks still ingest fine, the
+    recommendations are just calibrated for the league's shape regardless.
   - MOCK: replays a simulated draft using app.services.mock_draft's exact
     opponent-picking approach (app.services.opponent_model, unchanged)
     for the other 9 teams, and the REAL expensive tier's own top
@@ -62,12 +72,14 @@ import numpy as np
 from fastapi import WebSocket
 
 from app.config import NUM_DRAFT_ROUNDS, NUM_TEAMS, ROSTER_POSITIONS, SLEEPER_DRAFT_ID
+from app.leagues import LEAGUES
 from app.services import draft_score_engine
 from app.services import mcts as mcts_service
 from app.services import opponent_model
 from app.services import vbd as vbd_service
 from app.services.draft_state import DraftState
 from app.services.projections import build_baseline_projections
+from app.services.roster_identity import MY_SLEEPER_USER_ID
 from app.services.sleeper import SleeperAPIError, sleeper_client
 
 logger = logging.getLogger("ff_draft_assistant.draft_live")
@@ -76,6 +88,104 @@ DEFAULT_EXPENSIVE_THRESHOLD = 2  # "within 1-2 picks" per the brief
 DEFAULT_MOCK_DELAY_SECONDS = 1.5  # pacing so a mock draft is watchable, not instant
 LIVE_POLL_INTERVAL_SECONDS = 3  # matches the original Chunk 1 /ws/draft cadence
 CHEAP_BOARD_SIZE = 8
+
+# Draft IDs of the two REAL league drafts -- the "Sleeper Mock" watch mode
+# (below) refuses these: watching the real draft is what the plain LIVE
+# mode is for, with all its own safeguards. (Polling is read-only either
+# way -- SleeperClient has no write methods -- this is about keeping the
+# real-draft path a single, deliberate thing, not a config a stray paste
+# can land on.)
+_REAL_LEAGUE_DRAFT_IDS = frozenset(cfg.draft_id for cfg in LEAGUES.values())
+
+# The format the engine is calibrated for (Kiddos / Former Bradley Bums,
+# confirmed identical, Chunk 51). A Sleeper mock in a different format
+# still WATCHES fine -- picks are picks -- but recommendations are
+# calibrated for THIS shape regardless of the mock's real settings, so
+# `inspect_sleeper_draft` surfaces the mismatch as a non-blocking warning.
+_EXPECTED_TEAMS = 10
+_EXPECTED_ROUNDS = NUM_DRAFT_ROUNDS
+_EXPECTED_SUPER_FLEX_SLOTS = 1
+_EXPECTED_DEDICATED_TE_SLOTS = 0
+
+
+async def inspect_sleeper_draft(draft_id: str, my_slot_override: Optional[int] = None) -> dict[str, Any]:
+    """
+    Read-only pre-flight for the "Sleeper Mock" watch mode: fetch the
+    draft's metadata and report whether it's watchable, which slot is
+    "mine" (from the draft's own `draft_order`, keyed by
+    MY_SLEEPER_USER_ID), the real team count (snake math needs it), and
+    any format mismatches vs. the calibrated engine shape.
+
+    Returns {ok: bool, error: str|None, status, num_teams, num_rounds,
+    my_slot: int|None, my_slot_source, num_picks_so_far, format_warnings:
+    list[str]}. `ok=False` means a hard block (bad id / already finished /
+    it's a real league draft / slot unknown); a non-empty
+    `format_warnings` with `ok=True` means "watchable, but recommendations
+    may be miscalibrated."
+    """
+    if draft_id in _REAL_LEAGUE_DRAFT_IDS:
+        return {"ok": False, "error": (
+            "That's one of your real league drafts. Use the plain \"Live Draft\" mode for that "
+            "-- this mode is only for watching a separate Sleeper mock."
+        )}
+
+    try:
+        draft = await sleeper_client.get_draft(draft_id)
+    except SleeperAPIError as exc:
+        return {"ok": False, "error": f"Could not load draft {draft_id!r} from Sleeper: {exc}"}
+    if not isinstance(draft, dict) or not draft.get("draft_id"):
+        return {"ok": False, "error": f"Sleeper returned nothing usable for draft {draft_id!r}."}
+
+    status = draft.get("status")
+    if status == "complete":
+        return {"ok": False, "error": "That draft is already finished -- nothing left to watch."}
+
+    settings = draft.get("settings") or {}
+    num_teams = int(settings.get("teams") or _EXPECTED_TEAMS)
+    num_rounds = int(settings.get("rounds") or _EXPECTED_ROUNDS)
+
+    draft_order = draft.get("draft_order") or {}
+    my_slot: Optional[int] = None
+    my_slot_source = None
+    if my_slot_override is not None:
+        my_slot, my_slot_source = int(my_slot_override), "you"
+    elif MY_SLEEPER_USER_ID in draft_order:
+        my_slot, my_slot_source = int(draft_order[MY_SLEEPER_USER_ID]), "draft_order"
+    if my_slot is None:
+        return {"ok": False, "error": (
+            "Couldn't work out which slot is yours (your Sleeper account isn't in this draft's "
+            "order yet). Enter your draft slot manually and try again."
+        ), "num_teams": num_teams}
+    if not (1 <= my_slot <= num_teams):
+        return {"ok": False, "error": f"Slot {my_slot} is outside 1..{num_teams} for this draft."}
+
+    warnings: list[str] = []
+    if num_teams != _EXPECTED_TEAMS:
+        warnings.append(f"{num_teams}-team draft (engine is calibrated for {_EXPECTED_TEAMS}).")
+    if num_rounds != _EXPECTED_ROUNDS:
+        warnings.append(f"{num_rounds} rounds (engine assumes {_EXPECTED_ROUNDS}).")
+    if int(settings.get("slots_super_flex") or 0) != _EXPECTED_SUPER_FLEX_SLOTS:
+        warnings.append("no SUPER_FLEX slot -- your league is SUPERFLEX, so QB value will read high here.")
+    if int(settings.get("slots_te") or 0) != _EXPECTED_DEDICATED_TE_SLOTS:
+        warnings.append("has a dedicated TE slot -- your league doesn't; TE value will read differently.")
+    scoring_type = (draft.get("metadata") or {}).get("scoring_type")
+    if scoring_type and scoring_type != "2qb":
+        warnings.append(f"scoring_type={scoring_type!r} (your league is full-PPR + TE-premium SUPERFLEX).")
+
+    picks_so_far = None
+    try:
+        picks = await sleeper_client.get_draft_picks(draft_id)
+        picks_so_far = len(picks) if isinstance(picks, list) else None
+    except SleeperAPIError:
+        pass
+
+    return {
+        "ok": True, "error": None, "status": status,
+        "num_teams": num_teams, "num_rounds": num_rounds,
+        "my_slot": my_slot, "my_slot_source": my_slot_source,
+        "num_picks_so_far": picks_so_far,
+        "format_warnings": warnings,
+    }
 
 
 class DraftLiveManager:
@@ -91,9 +201,11 @@ class DraftLiveManager:
         self.players_by_id: dict[str, dict[str, Any]] = {}
         self.connections: set[WebSocket] = set()
 
-        self.mode: Optional[str] = None  # "live" | "mock"
+        self.mode: Optional[str] = None  # "live" | "mock" | "sleeper_mock"
         self.status: str = "idle"  # idle | waiting | running | complete | error
         self.expensive_threshold: int = DEFAULT_EXPENSIVE_THRESHOLD
+        self.watched_draft_id: Optional[str] = None  # non-None only for the "sleeper_mock" watch mode
+        self.session_warnings: list[str] = []  # format-mismatch notes for a sleeper_mock session
 
         self.last_pick_event: Optional[dict[str, Any]] = None
         self.last_draft_score: Optional[dict[str, Any]] = None
@@ -139,6 +251,8 @@ class DraftLiveManager:
             "is_recalculating": self.is_recalculating,
             "last_pick_event": self.last_pick_event,
             "last_draft_score": self.last_draft_score,
+            "watched_draft_id": self.watched_draft_id,
+            "session_warnings": self.session_warnings,
         }
         if self.draft_state is not None:
             base.update(
@@ -155,16 +269,34 @@ class DraftLiveManager:
 
     # -- starting a session ----------------------------------------------
 
-    async def start_live(self, my_slot: int, num_teams: int = NUM_TEAMS, expensive_threshold: int = DEFAULT_EXPENSIVE_THRESHOLD) -> None:
+    async def start_live(
+        self,
+        my_slot: int,
+        num_teams: int = NUM_TEAMS,
+        expensive_threshold: int = DEFAULT_EXPENSIVE_THRESHOLD,
+        watch_draft_id: Optional[str] = None,
+        session_warnings: Optional[list[str]] = None,
+    ) -> None:
+        """
+        `watch_draft_id=None` -> the plain LIVE path, unchanged: poll
+        SLEEPER_DRAFT_ID (the real active-league draft). A non-None
+        `watch_draft_id` is the "Sleeper Mock" watch mode -- poll THAT
+        draft instead (already validated by `inspect_sleeper_draft` in the
+        router). Everything downstream of the pick source -- the tiered
+        pipeline, the recommendation engine, the websocket feed -- is
+        identical for both.
+        """
         await self.stop()
         projections = await build_baseline_projections()
         self.players_by_id = {p["player_id"]: p for p in projections["players"]}
         self.draft_state = DraftState(my_slot=my_slot, num_teams=num_teams, roster_positions=list(ROSTER_POSITIONS))
-        self.mode = "live"
+        self.mode = "sleeper_mock" if watch_draft_id else "live"
         self.status = "waiting"
         self.expensive_threshold = expensive_threshold
+        self.watched_draft_id = watch_draft_id
+        self.session_warnings = list(session_warnings or [])
         self._reset_counters()
-        self._driver_task = asyncio.create_task(self._run_live_driver())
+        self._driver_task = asyncio.create_task(self._run_live_driver(watch_draft_id or SLEEPER_DRAFT_ID))
         await self.broadcast(self.snapshot())
 
     async def start_mock(
@@ -183,6 +315,8 @@ class DraftLiveManager:
         self.mode = "mock"
         self.status = "running"
         self.expensive_threshold = expensive_threshold
+        self.watched_draft_id = None
+        self.session_warnings = []
         self._reset_counters()
         self._driver_task = asyncio.create_task(
             self._run_mock_driver(seed=seed, delay_seconds=delay_seconds, mcts_iterations=mcts_iterations)
@@ -317,12 +451,12 @@ class DraftLiveManager:
 
     # -- LIVE driver: poll the real Sleeper draft -----------------------
 
-    async def _run_live_driver(self) -> None:
+    async def _run_live_driver(self, draft_id: str) -> None:
         seen_pick_nos: set[int] = set()
         try:
             while True:
                 try:
-                    picks = await sleeper_client.get_draft_picks(SLEEPER_DRAFT_ID)
+                    picks = await sleeper_client.get_draft_picks(draft_id)
                 except SleeperAPIError as exc:
                     logger.warning("Live draft poll failed: %s", exc)
                     await asyncio.sleep(LIVE_POLL_INTERVAL_SECONDS)

@@ -261,6 +261,21 @@ higher-value or genuinely-on-the-bubble pick:
     tie; Charbonnet (would_start=True RB, highest base score) stays leader.
 
   - Picks 39/122: unchanged, re-verified.
+
+CHUNK 63/64 UPDATE -- pure DATA DRIFT re-pin of picks 59, 82, 102. Chunk
+63's latency benchmark ran build_baseline_projections(force_refresh=True),
+replacing the Aug-29 baseline_projections.json that Chunk 62 pinned
+against with an Aug-30 one. The recommend() code path is byte-identical to
+Chunk 62's commit (0678080) -- confirmed by a git-stash negative control
+(stashing all five Chunk-64 feature files, which touch draft_live/live/the
+frontend and NOTHING in recommend()'s import graph, reproduces every
+drifted value exactly). 59: same winner, adp_tie_break flag drift only.
+82: (Tony Pollard, T, T) -> (Courtland Sutton, T, F). 102: (Zach
+Charbonnet, T, F) -> (Jordan Addison, F, F). 79/39/122 still match. This
+file's pins have now drifted on 3 of the last 4 chunks that touched live
+data -- flagged for the planning chat: consider loosening these
+real-draft-replay params to name-only, or accepting a near-every-chunk
+re-pin here.
 """
 from __future__ import annotations
 
@@ -359,7 +374,14 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
         # runs -- and picks Flowers anyway (|41.8-62|=20.2 < Goff's |24.9-62|=37.1).
         # Same winner, mechanism now the designed one. See the module docstring's
         # CHUNK 62 UPDATE.
-        (59, "Zay Flowers", True, True),
+        # CHUNK 63/64 RE-PIN -- DATA DRIFT (not code-driven). Chunk 63's latency
+        # benchmark called build_baseline_projections(force_refresh=True), moving
+        # baseline_projections.json from the Aug-29 snapshot Chunk 62 pinned against
+        # to an Aug-30 one. Same winner (Zay Flowers); adp_tie_break_applied drifts
+        # True -> False (the {Flowers, Goff} near-tie now resolves via adaptive
+        # resolution alone at 400 iters). Confirmed code-independent: git-stash of
+        # every Chunk 64 file -> byte-identical result.
+        (59, "Zay Flowers", True, False),
         # CHUNK 62 RE-PIN -- CODE-DRIVEN. Winner Courtland Sutton -> Tony Pollard.
         # OLD adaptive resolution falsely resolved this to Sutton alone; the honest
         # SE keeps a 4-way tie {Pollard, Sutton, Meyers, RJ Harvey} -- ALL four
@@ -370,20 +392,23 @@ def test_pick_122_no_longer_promotes_unmatched_group_default_by_default(
         # with Chunk 60's abs-distance decision. See CHUNK 62 UPDATE.
         (79, "Tony Pollard", True, True),
         (39, "Kyren Williams", True, False),   # DATA DRIFT, not code-driven -- confirmed via git-stash negative control this pick ALSO resolves cleanly to Kyren Williams under pure Chunk 38 code today, unrelated to this chunk's fix -- see module docstring's CHUNK 39 CORRECTION. CHUNK 60/62: still matches on both OLD and new code with today's data.
-        # CHUNK 62 RE-PIN -- CODE-DRIVEN. Same winner (Tony Pollard), adp_tie_break_applied
-        # flips True -> False: the {Pollard, Sutton} gap here is real enough to clear
-        # the honest between-batch SE bar, so adaptive resolution now resolves to
-        # Pollard directly and the ADP tie-break is skipped (adaptive_fully_resolved).
-        # OLD reached the same winner via the tie-break. See CHUNK 62 UPDATE.
-        (82, "Tony Pollard", True, False),
-        # CHUNK 62 RE-PIN -- CODE-DRIVEN, and an IMPROVEMENT. Winner Sam Darnold ->
-        # Zach Charbonnet. OLD adaptive resolution falsely resolved to Sam Darnold
-        # -- a would_start=False QB with a LOWER base mcts_score than Charbonnet --
-        # a textbook false-confidence resolution. The honest SE keeps the 3-way tie
-        # {Charbonnet, Stafford, Darnold}; Charbonnet (would_start=True RB, highest
-        # base score) stays leader and the ADP tie-break doesn't move him
-        # (|141.1-119|=22.1, closest to the next turn). See CHUNK 62 UPDATE.
-        (102, "Zach Charbonnet", True, False),
+        # CHUNK 63/64 RE-PIN -- DATA DRIFT (Chunk 63's force_refresh; see pick 59
+        # above). Chunk 62 had this at (Tony Pollard, True, True) -- its batch-SE
+        # keeps {Pollard, Sutton} tied and the abs-distance ADP tie-break picked
+        # Pollard on the Aug-29 data. On the Aug-30 data the tied group still forms
+        # but adaptive resolution now settles it on Sutton directly (adp_tie_break
+        # False, 500 iters) -- the Chunk 62 mechanism is intact, the ADPs relative
+        # to the next turn just moved. git-stash of every Chunk 64 file ->
+        # byte-identical (Courtland Sutton, True, False). Both are legitimate
+        # within-noise near-ties, all would-start; not a Track B regression.
+        (82, "Courtland Sutton", True, False),
+        # CHUNK 63/64 RE-PIN -- DATA DRIFT (Chunk 63's force_refresh). Chunk 62 had
+        # (Zach Charbonnet, True, False) off a 3-way {Charbonnet, Stafford, Darnold}
+        # tie. On the Aug-30 data there's no tie at all here -- Jordan Addison
+        # (would-start WR) separates in the base 150 iterations (adaptive_applied
+        # False, 0 adaptive iters). git-stash of every Chunk 64 file ->
+        # byte-identical (Jordan Addison, False, False).
+        (102, "Jordan Addison", False, False),
         (122, "Matthew Stafford", False, False),  # CHUNK 38: still resolves decisively after the base 150 iterations -- unaffected by Chunk 39. CHUNK 60/62: re-verified, still matches under today's data.
     ],
 )
@@ -407,27 +432,17 @@ def test_adaptive_resolution_replay_matches_expected_behavior(
     assert result["adp_tie_break_applied"] is expect_adp_tie_break_applied
 
 
-@pytest.mark.xfail(
-    reason="Pick 59 is a genuine, narrow near-tie by raw mcts_score (Zay Flowers 1736.7 vs Jared Goff "
-           "1733.7, combined stderr ~6.0, z~0.5) that legitimately runs the full 600-iteration adaptive "
-           "budget without separating early -- not a broken early-stop mechanism, but pick 59 does not "
-           "demonstrate EARLY-stopping specifically (the same reason Chunk 30 moved this test off pick "
-           "82). CHUNK 60: Flowers now wins this pick outright (the abs-distance tie-break fix removed "
-           "the signed-margin promotion of Goff -- see module docstring's CHUNK 60 UPDATE and the "
-           "parametrized test above, whose own xfail is now removed), but adaptive resolution still "
-           "uses all 600 iterations here, so this early-stop test stays xfail. Finding a new pick that "
-           "cleanly demonstrates early-stopping is out of scope -- deferred.",
-    strict=False,
-)
 def test_adaptive_resolution_can_stop_early_before_the_iteration_cap(
     players_by_id: dict[str, dict[str, Any]],
 ) -> None:
     """
-    CHUNK 30: re-pinned to pick 59 (Zay Flowers separates from the rest of
-    the group in 150 iterations at seed=1 with current data) -- pick 82,
-    used here before Chunk 30, no longer has a tie to resolve at all with
-    current data (see the parametrized test above), so it stopped being a
-    valid example of early-stopping specifically.
+    CHUNK 30: re-pinned to pick 59. CHUNK 63/64: xfail REMOVED -- it was
+    XPASSing. On the Aug-30 data, pick 59's adaptive resolution genuinely
+    stops early (400 of the 600-iteration budget at seed=1), so this pick
+    once again demonstrates early-stopping directly, which is the whole
+    point of this test. (It XFAILed from Chunk 60-62 because the tie ran
+    the full budget then; it's data-dependent whether a given near-tie
+    separates within budget, and this one currently does.)
     """
     real_picks = _load_real_picks()
     state = _state_before_pick(59, real_picks)
