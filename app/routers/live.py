@@ -28,11 +28,6 @@ router = APIRouter()
 class StartLiveRequest(BaseModel):
     my_slot: int = Field(..., ge=1)
     num_teams: int = Field(default=NUM_TEAMS)
-    expensive_threshold: int = Field(
-        default=draft_live.DEFAULT_EXPENSIVE_THRESHOLD,
-        ge=0,
-        description="Run the full Draft Score recompute once picks-until-your-turn drops to this many (0 = only on your exact turn).",
-    )
     watch_draft_id: Optional[str] = Field(
         default=None,
         description=(
@@ -76,7 +71,6 @@ async def start_live(request: StartLiveRequest) -> dict[str, Any]:
     await manager.start_live(
         my_slot=my_slot,
         num_teams=num_teams,
-        expensive_threshold=request.expensive_threshold,
         watch_draft_id=request.watch_draft_id,
         session_warnings=session_warnings,
     )
@@ -91,7 +85,6 @@ async def start_mock(request: StartMockRequest) -> dict[str, Any]:
         num_teams=request.num_teams,
         seed=request.seed,
         delay_seconds=request.delay_seconds,
-        expensive_threshold=request.expensive_threshold,
         mcts_iterations=request.mcts_iterations,
     )
     return manager.snapshot()

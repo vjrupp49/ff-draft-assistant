@@ -146,6 +146,59 @@ def test_start_live_no_watch_id_polls_the_real_draft_id(monkeypatch):
     assert snap["watched_draft_id"] is None
 
 
+def test_expensive_tier_fires_only_on_your_real_turn_not_provisionally(monkeypatch):
+    """
+    CHUNK 66: the tiered manager used to run compute_draft_score 3x per
+    turn (picks_until 2, 1, 0 -- two provisional, one real). Now it fires
+    ONLY when it's actually our turn, against the real state, and the
+    payload carries no `is_provisional`. my_slot=4 in a 10-team snake ->
+    first turn is pick 4 (picks 1-3 are opponents).
+    """
+    fired_at: list[int] = []
+
+    def fake_compute(state, players_by_id, **kw):
+        fired_at.append(state.current_pick_no)
+        return {"draft_score": {"player_id": "999", "name": "Pick", "position": "RB",
+                                "team": "A", "score": 1.0, "score_stderr": 0.0, "vbd_score": 1.0},
+                "explanation": {}, "alternatives_considered": []}
+
+    monkeypatch.setattr(draft_live.draft_score_engine, "compute_draft_score", fake_compute)
+
+    def run(num_opponent_picks_available):
+        fired_at.clear()
+        picks = [{"pick_no": i, "player_id": str(100 + i)}
+                 for i in range(1, num_opponent_picks_available + 1)]
+        monkeypatch.setattr(draft_live.sleeper_client, "get_draft_picks",
+                            AsyncMock(return_value=picks))
+        mgr = draft_live.get_manager()
+        broadcasts: list[dict[str, Any]] = []
+        orig = mgr.broadcast
+        async def capture(msg):
+            broadcasts.append(msg)
+            await orig(msg)
+        monkeypatch.setattr(mgr, "broadcast", capture)
+
+        async def scenario():
+            await mgr.start_live(my_slot=4, watch_draft_id=MOCK_ID)
+            await asyncio.sleep(0.1)
+            await mgr.stop()
+
+        asyncio.run(scenario())
+        return list(fired_at), broadcasts
+
+    # only picks 1-2 in yet -> current pick is 3, an opponent -> no compute at all
+    fires, _ = run(2)
+    assert fires == [], f"expensive tier fired before my turn: {fires}"
+
+    # pick 3 lands -> current_pick_no advances to 4 (my slot) -> exactly one real fire
+    fires, broadcasts = run(3)
+    assert fires == [4], f"expected exactly one fire on pick 4, got {fires}"
+    scores = [m for m in broadcasts if m.get("type") == "draft_score"]
+    assert len(scores) == 1
+    assert "is_provisional" not in scores[0]
+    assert scores[0]["is_my_turn"] is True
+
+
 def test_start_live_with_watch_id_polls_that_draft_id(monkeypatch):
     seen = AsyncMock(return_value=[])
     monkeypatch.setattr(draft_live.sleeper_client, "get_draft_picks", seen)

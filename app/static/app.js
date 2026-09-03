@@ -1302,6 +1302,10 @@
     // against simulated opponent picks, not a confirmed result -- see
     // the .provisional CSS rule for why this replaced a subtle inline
     // parenthetical (Chunk 11 follow-up: it was too easy to miss).
+    // CHUNK 66: the server no longer sends `is_provisional` -- the expensive
+    // tier fires only on your real turn now, never provisionally. This
+    // stays as a harmless no-op (undefined -> banner hidden, class off)
+    // rather than being ripped out.
     heroCard.classList.toggle("provisional", !!payload.is_provisional);
     provisionalBanner.classList.toggle("hidden", !payload.is_provisional);
 

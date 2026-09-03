@@ -10,27 +10,28 @@ not rebuilt):
      how many picks remain until the user is on the clock. Always cheap
      enough to do on every pick, which is what keeps the live feed
      feeling alive between the user's own turns.
-  2. EXPENSIVE: only when picks_until_your_turn <= expensive_threshold
-     (configurable, default 2) -- including when it's already the user's
-     turn (threshold check naturally covers 0) -- run the real
+  2. EXPENSIVE: only once it is actually the user's turn
+     (picks_until_your_turn == 0) -- run the real
      app.services.draft_score_engine computation (MCTS + Shapley) and
      broadcast it. A "recalculating" message is broadcast the moment this
      tier starts, before the (multi-second) computation finishes, so the
      frontend can show a live "thinking" state rather than looking frozen.
 
-     SUBTLETY (found by actually running this, not just describing it --
-     see this chunk's verification notes): mcts.recommend() requires a
-     state where it's LITERALLY the user's turn (its tree root is "my
-     candidate picks right now"); calling it early, while opponent picks
-     are still pending, raised an uncaught ValueError that silently killed
-     the driver task. Since "within 1-2 picks" is explicitly what this
-     tier is supposed to cover, `_run_expensive` provisionally simulates
-     the intervening opponent pick(s) (same opponent_model policy used for
-     real opponent turns) on a CLONE before invoking MCTS -- never
-     mutating the real shared draft_state -- and marks the result
-     `is_provisional: true`. The very next real pick re-triggers this tier
-     fresh, correcting (or confirming) the guess once real information
-     arrives.
+     CHUNK 66: this tier used to ALSO fire early -- at
+     picks_until_your_turn within a configurable threshold (default 2) --
+     provisionally simulating the not-yet-known opponent pick(s) on a
+     CLONE (mcts.recommend()'s tree root must be "my pick right now", so
+     it can't run against a state where opponents are still on the clock)
+     and marking the result `is_provisional: true`. Chunk 65's end-to-end
+     instrumentation showed that fired compute_draft_score 3x per turn
+     (picks_until 2, 1, 0), sequential and uncancellable, stacking to
+     ~40s of compute on near-tie turns -- uncomfortably close to the real
+     60s draft clock. The two provisional fires only added latency that
+     the real on-the-clock fire immediately corrected anyway, so they
+     were removed: `_maybe_run_expensive` now fires solely when
+     `is_my_turn`, and `_run_expensive` always runs against the real,
+     unmodified draft_state. The frontend's provisional banner just never
+     activates (the `is_provisional` key is gone from the payload).
 
 TWO DRIVERS feed picks into the SAME tiered pipeline, deliberately not two
 separate systems (same principle draft_state.py itself established in
@@ -84,7 +85,6 @@ from app.services.sleeper import SleeperAPIError, sleeper_client
 
 logger = logging.getLogger("ff_draft_assistant.draft_live")
 
-DEFAULT_EXPENSIVE_THRESHOLD = 2  # "within 1-2 picks" per the brief
 DEFAULT_MOCK_DELAY_SECONDS = 1.5  # pacing so a mock draft is watchable, not instant
 LIVE_POLL_INTERVAL_SECONDS = 3  # matches the original Chunk 1 /ws/draft cadence
 CHEAP_BOARD_SIZE = 8
@@ -203,7 +203,6 @@ class DraftLiveManager:
 
         self.mode: Optional[str] = None  # "live" | "mock" | "sleeper_mock"
         self.status: str = "idle"  # idle | waiting | running | complete | error
-        self.expensive_threshold: int = DEFAULT_EXPENSIVE_THRESHOLD
         self.watched_draft_id: Optional[str] = None  # non-None only for the "sleeper_mock" watch mode
         self.session_warnings: list[str] = []  # format-mismatch notes for a sleeper_mock session
 
@@ -245,7 +244,6 @@ class DraftLiveManager:
             "type": "snapshot",
             "mode": self.mode,
             "status": self.status,
-            "expensive_threshold": self.expensive_threshold,
             "cheap_update_count": self.cheap_update_count,
             "expensive_update_count": self.expensive_update_count,
             "is_recalculating": self.is_recalculating,
@@ -273,7 +271,6 @@ class DraftLiveManager:
         self,
         my_slot: int,
         num_teams: int = NUM_TEAMS,
-        expensive_threshold: int = DEFAULT_EXPENSIVE_THRESHOLD,
         watch_draft_id: Optional[str] = None,
         session_warnings: Optional[list[str]] = None,
     ) -> None:
@@ -292,7 +289,6 @@ class DraftLiveManager:
         self.draft_state = DraftState(my_slot=my_slot, num_teams=num_teams, roster_positions=list(ROSTER_POSITIONS))
         self.mode = "sleeper_mock" if watch_draft_id else "live"
         self.status = "waiting"
-        self.expensive_threshold = expensive_threshold
         self.watched_draft_id = watch_draft_id
         self.session_warnings = list(session_warnings or [])
         self._reset_counters()
@@ -305,7 +301,6 @@ class DraftLiveManager:
         num_teams: int = NUM_TEAMS,
         seed: int = 1,
         delay_seconds: float = DEFAULT_MOCK_DELAY_SECONDS,
-        expensive_threshold: int = DEFAULT_EXPENSIVE_THRESHOLD,
         mcts_iterations: int = mcts_service.ITERATIONS,
     ) -> None:
         await self.stop()
@@ -314,7 +309,6 @@ class DraftLiveManager:
         self.draft_state = DraftState(my_slot=my_slot, num_teams=num_teams, roster_positions=list(ROSTER_POSITIONS))
         self.mode = "mock"
         self.status = "running"
-        self.expensive_threshold = expensive_threshold
         self.watched_draft_id = None
         self.session_warnings = []
         self._reset_counters()
@@ -382,8 +376,17 @@ class DraftLiveManager:
         return event
 
     async def _maybe_run_expensive(self) -> Optional[dict[str, Any]]:
+        # CHUNK 66: fire ONLY once it's actually our turn. This tier used
+        # to also fire early -- picks_until_next_turn() within a threshold
+        # (default 2) -- running a provisional compute_draft_score against
+        # simulated opponent picks. Chunk 65's end-to-end instrumentation
+        # showed that stacked 3 sequential, uncancellable computes per turn
+        # (picks_until 2, 1, 0), ~40s on near-tie turns, too close to the
+        # real 60s clock. The two early fires only added latency the real
+        # on-the-clock fire immediately corrected, so they're gone. See
+        # the module docstring's CHUNK 66 note.
         assert self.draft_state is not None
-        if self.draft_state.picks_until_next_turn() <= self.expensive_threshold:
+        if self.draft_state.is_my_turn:
             return await self._run_expensive()
         return None
 
@@ -393,38 +396,18 @@ class DraftLiveManager:
         self.is_recalculating = True
         await self.broadcast({"type": "recalculating", "picks_until_your_turn": state.picks_until_next_turn()})
 
-        # mcts.recommend() requires a state where it's LITERALLY the
-        # deciding player's turn (its tree root is "my candidate picks
-        # right now") -- but this tier is deliberately triggered EARLY too
-        # (picks_until_your_turn within expensive_threshold, not just 0),
-        # so there can still be 1+ opponent picks left before it's
-        # actually our turn. We can't know those for certain yet, so we
-        # provisionally simulate them (the same opponent_model policy used
-        # for real opponent picks) on a CLONE -- never mutating the real
-        # shared draft_state -- and label the result "provisional". The
-        # very next real pick re-triggers this tier fresh anyway, which
-        # naturally corrects (or confirms) the guess once real information
-        # arrives -- this is what lets the "recalculating" state start
-        # before the user's exact turn without ever running MCTS against
-        # an invalid/mismatched state.
-        eval_state = state
-        is_provisional = False
-        if not eval_state.is_my_turn:
-            eval_state = eval_state.clone()
-            rng = np.random.default_rng()
-            guard = 0
-            while not eval_state.is_my_turn and guard < eval_state.num_teams * 2:
-                pid = self._opponent_pick(rng, state=eval_state)
-                if pid is None:
-                    break
-                eval_state.add_pick(pid)
-                guard += 1
-            is_provisional = True
-
+        # CHUNK 66: always runs against the real, unmodified draft_state --
+        # `_maybe_run_expensive` only calls this when `is_my_turn`, and the
+        # mock driver only calls it directly on our turn too, so
+        # mcts.recommend()'s "tree root is my pick right now" precondition
+        # always holds without simulating anything. (Pre-Chunk-66 this tier
+        # also fired early and had to provisionally simulate the pending
+        # opponent picks on a clone -- see the git history / module
+        # docstring for why that was removed.)
         try:
             result = await asyncio.to_thread(
                 draft_score_engine.compute_draft_score,
-                eval_state,
+                state,
                 self.players_by_id,
                 iterations=mcts_iterations,
             )
@@ -440,7 +423,6 @@ class DraftLiveManager:
             "current_round": state.current_round,
             "is_my_turn": state.is_my_turn,
             "picks_until_your_turn": state.picks_until_next_turn(),
-            "is_provisional": is_provisional,
             **result,
         }
         self.last_draft_score = payload
@@ -525,7 +507,9 @@ class DraftLiveManager:
                     if pid is None:
                         break
                     await self._record_pick(pid)
-                    await self._maybe_run_expensive()
+                    # CHUNK 66: no expensive recompute after an opponent
+                    # pick -- the tier fires only on our own turn now (the
+                    # `if is_my_turn` branch above). Was `_maybe_run_expensive()`.
 
                 await asyncio.sleep(delay_seconds)
 
