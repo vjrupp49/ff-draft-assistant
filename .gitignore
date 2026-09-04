@@ -7,8 +7,19 @@ data/baseline_projections.json
 data/player_simulations.json
 data/adp_cache.json
 data/adp_fallback_cache.json
-data/replay_snapshots/
-data/replay_trajectories/
+data/replay_snapshots/*
+data/replay_trajectories/*
+# CHUNK 67: these specific frozen fixtures ARE committed -- the migrated
+# tests/test_adaptive_resolution_regression.py hard-depends on them (the
+# same way tests/test_chunk55-58 depend on the Chunk 41 picklog, which
+# stays local). Everything else in these dirs remains local scratch.
+!data/replay_snapshots/chunk40_20260826.json
+!data/replay_trajectories/chunk67_adaptive_pick39.json
+!data/replay_trajectories/chunk67_adaptive_pick59.json
+!data/replay_trajectories/chunk67_adaptive_pick79.json
+!data/replay_trajectories/chunk67_adaptive_pick82.json
+!data/replay_trajectories/chunk67_adaptive_pick102.json
+!data/replay_trajectories/chunk67_adaptive_pick122.json
 .env
 server.log
 
