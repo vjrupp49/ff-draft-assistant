@@ -7,6 +7,7 @@ data/baseline_projections.json
 data/player_simulations.json
 data/adp_cache.json
 data/adp_fallback_cache.json
+data/live_session.json
 data/replay_snapshots/*
 data/replay_trajectories/*
 # CHUNK 67: these specific frozen fixtures ARE committed -- the migrated
@@ -22,6 +23,11 @@ data/replay_trajectories/*
 !data/replay_trajectories/chunk67_adaptive_pick122.json
 .env
 server.log
+
+# CHUNK 68: .claude/launch.json (the one canonical dev-server launcher) IS
+# committed; machine-local Claude Code settings are not.
+.claude/settings.local.json
+.claude/settings.json
 
 # CHUNK 54: data/draft_targets.json is deliberately NOT listed here, unlike
 # the regenerable API caches above -- it holds genuine user target-pick

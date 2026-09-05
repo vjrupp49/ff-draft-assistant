@@ -66,7 +66,10 @@ its multi-second duration.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -88,6 +91,50 @@ logger = logging.getLogger("ff_draft_assistant.draft_live")
 DEFAULT_MOCK_DELAY_SECONDS = 1.5  # pacing so a mock draft is watchable, not instant
 LIVE_POLL_INTERVAL_SECONDS = 3  # matches the original Chunk 1 /ws/draft cadence
 CHEAP_BOARD_SIZE = 8
+# CHUNK 68: the snapshot sent to a (re)connecting client carries this many
+# recent pick events, so a client that dropped for a few picks -- wifi
+# blip, laptop sleep, tab refresh -- rebuilds a coherent feed instead of
+# a single orphan row.
+RECENT_PICKS_BUFFER = 15
+
+# CHUNK 68: a live/sleeper_mock session's *inputs* (mode, slot, team count,
+# which draft_id) are persisted here so a server restart mid-draft can
+# re-arm the poller and rebuild state from Sleeper (the source of truth)
+# instead of losing the session with the process. Only the tiny descriptor
+# is stored -- never draft_state itself, which is always reconstructed by
+# replaying Sleeper's get_draft_picks feed. MOCK sessions are not persisted
+# (a throwaway simulation, not tied to anything external). The file is
+# written on start_live, removed on stop() / start_mock() / draft
+# completion.
+_LIVE_SESSION_PATH = "data/live_session.json"
+
+
+def _save_live_session(descriptor: dict[str, Any], path: Optional[str] = None) -> None:
+    p = Path(path or _LIVE_SESSION_PATH)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {**descriptor, "saved_at": time.time()}
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    tmp.replace(p)  # atomic-ish: never leave a half-written session file
+
+
+def _load_live_session(path: Optional[str] = None) -> Optional[dict[str, Any]]:
+    p = Path(path or _LIVE_SESSION_PATH)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Ignoring unreadable live-session file %s: %s", p, exc)
+        return None
+    if not isinstance(data, dict) or "my_slot" not in data:
+        logger.warning("Ignoring malformed live-session file %s", p)
+        return None
+    return data
+
+
+def _clear_live_session(path: Optional[str] = None) -> None:
+    Path(path or _LIVE_SESSION_PATH).unlink(missing_ok=True)
 
 # Draft IDs of the two REAL league drafts -- the "Sleeper Mock" watch mode
 # (below) refuses these: watching the real draft is what the plain LIVE
@@ -207,6 +254,7 @@ class DraftLiveManager:
         self.session_warnings: list[str] = []  # format-mismatch notes for a sleeper_mock session
 
         self.last_pick_event: Optional[dict[str, Any]] = None
+        self.recent_picks: list[dict[str, Any]] = []  # CHUNK 68: reconnect feed buffer
         self.last_draft_score: Optional[dict[str, Any]] = None
         self.is_recalculating: bool = False
 
@@ -248,6 +296,7 @@ class DraftLiveManager:
             "expensive_update_count": self.expensive_update_count,
             "is_recalculating": self.is_recalculating,
             "last_pick_event": self.last_pick_event,
+            "recent_picks": self.recent_picks,
             "last_draft_score": self.last_draft_score,
             "watched_draft_id": self.watched_draft_id,
             "session_warnings": self.session_warnings,
@@ -292,6 +341,17 @@ class DraftLiveManager:
         self.watched_draft_id = watch_draft_id
         self.session_warnings = list(session_warnings or [])
         self._reset_counters()
+        # CHUNK 68: persist the session inputs BEFORE arming the poller so a
+        # crash a moment later still leaves a resumable descriptor.
+        _save_live_session(
+            {
+                "mode": self.mode,
+                "my_slot": my_slot,
+                "num_teams": num_teams,
+                "watch_draft_id": watch_draft_id,
+                "session_warnings": self.session_warnings,
+            }
+        )
         self._driver_task = asyncio.create_task(self._run_live_driver(watch_draft_id or SLEEPER_DRAFT_ID))
         await self.broadcast(self.snapshot())
 
@@ -311,6 +371,7 @@ class DraftLiveManager:
         self.status = "running"
         self.watched_draft_id = None
         self.session_warnings = []
+        _clear_live_session()  # CHUNK 68: a mock is not a resumable live session
         self._reset_counters()
         self._driver_task = asyncio.create_task(
             self._run_mock_driver(seed=seed, delay_seconds=delay_seconds, mcts_iterations=mcts_iterations)
@@ -322,9 +383,11 @@ class DraftLiveManager:
             self._driver_task.cancel()
             self._driver_task = None
         self.status = "idle"
+        _clear_live_session()  # CHUNK 68: an explicitly-stopped session must not auto-resume
 
     def _reset_counters(self) -> None:
         self.last_pick_event = None
+        self.recent_picks = []
         self.last_draft_score = None
         self.is_recalculating = False
         self.cheap_update_count = 0
@@ -371,6 +434,8 @@ class DraftLiveManager:
             "cheap_board": self._cheap_board(),
         }
         self.last_pick_event = event
+        self.recent_picks.append(event)
+        del self.recent_picks[:-RECENT_PICKS_BUFFER]
         self.cheap_update_count += 1
         await self.broadcast(event)
         return event
@@ -435,6 +500,15 @@ class DraftLiveManager:
 
     async def _run_live_driver(self, draft_id: str) -> None:
         seen_pick_nos: set[int] = set()
+        # CHUNK 68: the first poll may return MANY picks at once -- a normal
+        # mid-draft start, or a server-restart resume. Replay them to
+        # rebuild draft_state, but DON'T fire the expensive tier once per
+        # past "my turn" (that would burn ~10s of stale MCTS per prior
+        # round, tens of seconds of startup churn while the real clock
+        # runs). After the catch-up replay, fire the expensive tier exactly
+        # once IF it's currently our turn.
+        caught_up = False
+        total_picks = self.draft_state.num_teams * NUM_DRAFT_ROUNDS
         try:
             while True:
                 try:
@@ -459,7 +533,20 @@ class DraftLiveManager:
                     if raw["pick_no"] != self.draft_state.current_pick_no:
                         continue
                     await self._record_pick(str(raw["player_id"]))
+                    if caught_up:
+                        await self._maybe_run_expensive()
+
+                if not caught_up:
+                    caught_up = True
                     await self._maybe_run_expensive()
+
+                if len(self.draft_state.picks) >= total_picks:
+                    # CHUNK 68: draft is over -- stop polling a finished
+                    # draft forever and don't leave a resumable session.
+                    self.status = "complete"
+                    _clear_live_session()
+                    await self.broadcast({"type": "draft_complete", "my_roster": self.draft_state.roster_player_ids()})
+                    return
 
                 await asyncio.sleep(LIVE_POLL_INTERVAL_SECONDS)
         except asyncio.CancelledError:
@@ -527,3 +614,44 @@ def get_manager() -> DraftLiveManager:
     if _manager is None:
         _manager = DraftLiveManager()
     return _manager
+
+
+async def resume_live_session_if_any() -> bool:
+    """
+    CHUNK 68: called once on server startup (app/main.py's lifespan). If a
+    live/sleeper_mock session was running when the process died, re-arm it
+    from the persisted descriptor -- the poller then rebuilds draft_state
+    by replaying Sleeper's get_draft_picks feed. Returns True if a session
+    was resumed.
+
+    Safe no-op when there's no session file, and self-healing: a
+    descriptor that no longer makes sense (e.g. a sleeper_mock draft that
+    finished while the server was down) is cleared and skipped rather than
+    left to fail on every startup.
+    """
+    descriptor = _load_live_session()
+    if descriptor is None:
+        return False
+
+    mode = descriptor.get("mode")
+    if mode not in ("live", "sleeper_mock"):
+        logger.warning("Discarding live-session descriptor with unexpected mode %r", mode)
+        _clear_live_session()
+        return False
+
+    watch_draft_id = descriptor.get("watch_draft_id")
+    if mode == "sleeper_mock" and watch_draft_id:
+        info = await inspect_sleeper_draft(watch_draft_id, my_slot_override=descriptor.get("my_slot"))
+        if not info.get("ok"):
+            logger.info("Not resuming sleeper_mock session %s: %s", watch_draft_id, info.get("error"))
+            _clear_live_session()
+            return False
+
+    logger.info("Resuming %s draft session (my_slot=%s) after restart", mode, descriptor.get("my_slot"))
+    await get_manager().start_live(
+        my_slot=int(descriptor["my_slot"]),
+        num_teams=int(descriptor.get("num_teams") or NUM_TEAMS),
+        watch_draft_id=watch_draft_id,
+        session_warnings=descriptor.get("session_warnings") or [],
+    )
+    return True

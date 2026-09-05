@@ -1226,7 +1226,19 @@
       }
     }
     updateHeadline(s);
-    if (s.last_pick_event) renderFeedFromEvent(s.last_pick_event);
+    // CHUNK 68: rebuild the feed from the snapshot's recent-picks buffer so
+    // a reconnect / refresh / second tab shows a coherent feed, not one
+    // orphan row (and no duplicates from status-fetch + ws-register both
+    // calling this).
+    if (s.recent_picks && s.recent_picks.length) {
+      feedList.innerHTML = "";
+      feedHasItems = true;
+      s.recent_picks.forEach(renderFeedFromEvent);
+    } else if (s.last_pick_event) {
+      feedList.innerHTML = "";
+      feedHasItems = true;
+      renderFeedFromEvent(s.last_pick_event);
+    }
     if (s.last_draft_score) applyDraftScore(s.last_draft_score, true);
     setRecalculating(!!s.is_recalculating);
     updateCounts(s.cheap_update_count, s.expensive_update_count);

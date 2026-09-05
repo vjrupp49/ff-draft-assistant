@@ -57,6 +57,12 @@ def _fast_projections(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_live_session(monkeypatch, tmp_path):
+    """CHUNK 68: start_live() now persists a session descriptor -- keep it out of the repo's data/."""
+    monkeypatch.setattr(draft_live, "_LIVE_SESSION_PATH", str(tmp_path / "live_session.json"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_manager():
     yield
     mgr = draft_live.get_manager()

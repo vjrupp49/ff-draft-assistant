@@ -98,26 +98,21 @@ work" for a differently-scored league without real work first.
 
 ---
 
-## 5. There's a stray, broken launch config one folder up
+## 5. ~~There's a stray, broken launch config one folder up~~ — FIXED (Chunk 68)
 
-**What it is.** `Fantasy Football/.claude/launch.json` (the *parent* of
-this repo) is an old, duplicate launcher entry, also named
-"ff-draft-assistant" and also on port 8000. The correct one is
-`ff-draft-assistant/.claude/launch.json` inside this repo.
+**What it was.** `Fantasy Football/.claude/launch.json` (the *parent* of
+this repo) was an old, broken duplicate launcher entry, also named
+"ff-draft-assistant" and also on port 8000 — it would fail to start the
+app if picked up.
 
-**What you'll see.** Normally nothing. But if the app "won't start" or
-complains about port 8000 already being in use, this duplicate may have
-been picked up instead of the real one.
+**Fixed in Chunk 68.** The stray parent-folder file was deleted. The one
+correct launcher, `ff-draft-assistant/.claude/launch.json`, is now
+committed to the repo. There is no longer a duplicate to trip over.
 
-**What to do.** Start the server from **inside** the `ff-draft-assistant`
-folder:
+**If the app ever "won't start"** it's almost certainly port 8000 already
+in use — kill any leftover `python`/`uvicorn` process and retry, or start
+it by hand from **inside** the `ff-draft-assistant` folder:
 
 ```bash
 .venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
-
-If port 8000 is stuck, kill any leftover `python`/`uvicorn` process and
-retry.
-
-**Status.** Cosmetic/operational annoyance, logged long ago, not yet
-cleaned up (the stray file is outside this repo).

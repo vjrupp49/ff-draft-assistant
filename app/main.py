@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -32,12 +34,28 @@ from app.routers.simulate import router as simulate_router
 from app.routers.targets import router as targets_router
 from app.routers.trade import router as trade_router
 from app.routers.waivers import router as waivers_router
+from app.services import draft_live
 from app.services.sleeper import SleeperAPIError, sleeper_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ff_draft_assistant")
 
-app = FastAPI(title="FF Draft Assistant")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # CHUNK 68: if the server died mid-draft, re-arm the live poller from
+    # the persisted session descriptor -- state rebuilds from Sleeper's
+    # pick feed, so a crash/restart doesn't lose track of the draft.
+    try:
+        resumed = await draft_live.resume_live_session_if_any()
+        if resumed:
+            logger.info("Live draft session resumed on startup")
+    except Exception:  # never let a resume failure stop the server booting
+        logger.exception("Live-session resume failed on startup (continuing without it)")
+    yield
+
+
+app = FastAPI(title="FF Draft Assistant", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(rankings_router)
