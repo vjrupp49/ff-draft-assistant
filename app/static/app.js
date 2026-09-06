@@ -1027,6 +1027,7 @@
   var heroName = document.getElementById("hero-name");
   var heroScore = document.getElementById("hero-score");
   var heroWhy = document.getElementById("hero-why");
+  var reachWarning = document.getElementById("reach-warning");
   var provisionalBanner = document.getElementById("provisional-banner");
 
   var altsList = document.getElementById("alts-list");
@@ -1308,6 +1309,7 @@
 
     animateScore(Math.round(ds.score));
     heroWhy.textContent = explanationToText(ex);
+    renderReachWarning(payload.reach);
     renderAlts(alts);
 
     // Persistent, high-contrast signal that this number is a projection
@@ -1332,6 +1334,25 @@
     }
     var pct = ex.bench_discount_applied != null ? Math.round(ex.bench_discount_applied * 100) + "%" : "a fraction of";
     return "Would mostly ride your bench (rank #" + (ex.bench_rank || "?") + " at the position) — valued at roughly " + pct + " full weight.";
+  }
+
+  // CHUNK 69: inline "reach" hint -- server-computed (draft_score_engine),
+  // display-only. Shown only when the recommendation's real ADP is >= 15
+  // picks past the current pick (Known Limitation #1 territory).
+  function renderReachWarning(reach) {
+    if (!reach || !reach.is_reach) {
+      reachWarning.classList.add("hidden");
+      reachWarning.textContent = "";
+      return;
+    }
+    var early = Math.round(reach.picks_early);
+    var txt = "⚠️ Reach: ADP " + early + " pick" + (early === 1 ? "" : "s") + " out — likely still there next round.";
+    if (reach.alternative) {
+      var a = reach.alternative;
+      txt += " Consider " + a.name + " (" + a.position + ", ADP " + a.adp + ") — at risk before your next turn.";
+    }
+    reachWarning.textContent = txt;
+    reachWarning.classList.remove("hidden");
   }
 
   function animateScore(target) {
@@ -1399,6 +1420,7 @@
     turnBadge.textContent = "DRAFT COMPLETE";
     turnBadge.className = "turn-badge waiting";
     heroWhy.textContent = "This draft has finished.";
+    renderReachWarning(null);
   }
 
   function escapeHtml(str) {

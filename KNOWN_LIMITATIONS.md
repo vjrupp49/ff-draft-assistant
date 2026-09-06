@@ -31,6 +31,12 @@ the "also in the mix" list — for the best WR and strongly consider taking
 that instead. The engine's *ranking* of players within a position is
 still trustworthy; it's the cross-position balance that's off.
 
+*Chunk 69:* the recommendation now shows an inline ⚠️ **Reach** line when
+its real ADP is 15+ picks early ("likely still there next round"), and
+names one alternative who is genuinely at risk before your next turn.
+It's a hint, not a rule — but it's exactly the "look down the board"
+prompt this limitation calls for.
+
 **Status.** Root cause is understood and precisely located. Three
 separate fix attempts failed for real structural reasons. Accepted as a
 known limitation for this draft rather than rushed.

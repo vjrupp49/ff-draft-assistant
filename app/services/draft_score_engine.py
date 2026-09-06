@@ -15,11 +15,30 @@ from typing import Any, Optional
 from app.services import mcts as mcts_service
 from app.services import portfolio as portfolio_service
 from app.services import shapley as shapley_service
-from app.services.draft_state import DraftState
+from app.services.draft_state import DraftState, slot_on_the_clock
+
+# CHUNK 69: flag a recommendation whose real market ADP sits this many
+# picks or more past the current pick -- "you could very likely still get
+# this player a round later." Display-only; see the `reach` block built
+# at the end of compute_draft_score().
+REACH_THRESHOLD_PICKS = 15
 
 
 class DraftScoreError(RuntimeError):
     """No candidates to evaluate, or an explicitly-requested candidate wasn't among them."""
+
+
+def _my_next_turn_pick_no(draft_state: DraftState) -> int:
+    """
+    pick_no of my turn AFTER the one I'm currently on the clock for -- pure
+    snake math (same as mcts._next_turn_pick_no; kept local rather than
+    importing a `_`-private across modules). Bounded: slot_on_the_clock is
+    periodic with period 2*num_teams, so this always converges.
+    """
+    pick_no = draft_state.current_pick_no + 1
+    while slot_on_the_clock(pick_no, draft_state.num_teams) != draft_state.my_slot:
+        pick_no += 1
+    return pick_no
 
 
 def compute_draft_score(
@@ -107,6 +126,41 @@ def compute_draft_score(
             "in the Draft Score above (see app/services/portfolio.py)."
         )
 
+    # CHUNK 69 -- DISPLAY-ONLY "reach" hint. Pure arithmetic + one max()
+    # over `recommendations`, which mcts.recommend() already returned with
+    # `market_adp` and `vbd_score` on every entry (filled from the same VBD
+    # table it built for THIS pick). No new compute path, no new lookup,
+    # no change to `focus` / the score / the explanation. See this module's
+    # REACH_THRESHOLD_PICKS note and app/static/app.js applyDraftScore().
+    focus_adp = focus.get("market_adp")
+    current_pick_no = draft_state.current_pick_no
+    next_turn_pick_no = _my_next_turn_pick_no(draft_state)
+    picks_early = round(focus_adp - current_pick_no, 1) if focus_adp is not None else None
+    is_reach = picks_early is not None and picks_early >= REACH_THRESHOLD_PICKS
+
+    reach_alternative = None
+    if is_reach:
+        at_risk = [
+            r for r in recommendations
+            if r["player_id"] != focus["player_id"]
+            and r.get("market_adp") is not None
+            and r.get("vbd_score") is not None
+            # ADP lands in the window between now and your next turn -- i.e.
+            # genuinely on the bubble. Excludes players whose ADP is already
+            # well past (a data quirk / falling knife, not a "grab them now"),
+            # which is the point of the lower bound.
+            and current_pick_no <= r["market_adp"] <= next_turn_pick_no
+        ]
+        if at_risk:
+            alt = max(at_risk, key=lambda r: r["vbd_score"])
+            reach_alternative = {
+                "player_id": alt["player_id"],
+                "name": alt["name"],
+                "position": alt["position"],
+                "adp": round(alt["market_adp"], 1),
+                "vbd_score": round(alt["vbd_score"], 1),
+            }
+
     return {
         "draft_score": {
             "player_id": focus["player_id"],
@@ -116,7 +170,16 @@ def compute_draft_score(
             "score": focus["mcts_score"],
             "score_stderr": focus["mcts_score_stderr"],
             "vbd_score": focus["vbd_score"],
+            "adp": round(focus_adp, 1) if focus_adp is not None else None,
             "statistically_tied_with_top_pick": focus.get("within_noise_of_leader"),
+        },
+        "reach": {
+            "is_reach": is_reach,
+            "recommended_adp": round(focus_adp, 1) if focus_adp is not None else None,
+            "current_pick_no": current_pick_no,
+            "next_turn_pick_no": next_turn_pick_no,
+            "picks_early": picks_early,
+            "alternative": reach_alternative,
         },
         "explanation": {
             "marginal_value": focus_shapley["shapley_value"],

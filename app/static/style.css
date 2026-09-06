@@ -836,6 +836,20 @@ html, body {
   max-width: 60ch;
 }
 
+/* CHUNK 69: inline "reach" hint -- unobtrusive, sits under .hero-why */
+.reach-warning {
+  margin-top: 0.85rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--recalc);
+  background: rgba(255, 176, 32, 0.08);
+  border-left: 3px solid var(--recalc);
+  border-radius: 6px;
+  max-width: 60ch;
+}
+
 /* ---------------- secondary alternatives list ---------------- */
 
 .alts-block { margin-top: 1.5rem; }
