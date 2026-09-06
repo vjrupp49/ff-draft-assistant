@@ -214,14 +214,27 @@ def compute_draft_score(
             "roster_evaluated": [p["player_id"] for p in roster_with_focus],
             "note": note,
         },
+        # CHUNK 74: each alternative now also carries the same reach fields
+        # as the #1 pick (adp / picks_early / is_reach) -- pure arithmetic
+        # on `market_adp`, which mcts.recommend() already returned per
+        # candidate. 7 entries (was 5) so the frontend's "sort by ADP
+        # risk" toggle has a couple of extra candidates to surface; the
+        # default "sort by value" view still shows the top 5 by score,
+        # unchanged. No new compute, no change to `focus` / the score.
         "alternatives_considered": [
             {
                 "player_id": r["player_id"],
                 "name": r["name"],
                 "position": r["position"],
                 "score": r["mcts_score"],
+                "adp": round(r["market_adp"], 1) if r.get("market_adp") is not None else None,
+                "picks_early": round(r["market_adp"] - current_pick_no, 1) if r.get("market_adp") is not None else None,
+                "is_reach": (
+                    r.get("market_adp") is not None
+                    and (r["market_adp"] - current_pick_no) >= REACH_THRESHOLD_PICKS
+                ),
             }
             for r in sorted(recommendations, key=lambda r: -r["mcts_score"])
             if r["player_id"] != focus["player_id"]
-        ][:5],
+        ][:7],
     }

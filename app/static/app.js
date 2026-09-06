@@ -1032,6 +1032,7 @@
   var provisionalBanner = document.getElementById("provisional-banner");
 
   var altsList = document.getElementById("alts-list");
+  var altsSort = document.getElementById("alts-sort");
 
   var recalcBadge = document.getElementById("recalc-badge");
   var feedList = document.getElementById("feed-list");
@@ -1041,6 +1042,16 @@
   var selectedMode = "live";
   var currentHeroScore = null;
   var feedHasItems = false;
+
+  // CHUNK 74: "Also in the mix" sort -- "value" (default, by Draft Score)
+  // or "risk" (by ADP, most-likely-gone-first). Display-only re-order of
+  // the same candidates; persisted per-viewer so a reconnect keeps it.
+  var altsSortMode = "value";
+  try {
+    var savedSort = localStorage.getItem("ff_alts_sort");
+    if (savedSort === "value" || savedSort === "risk") altsSortMode = savedSort;
+  } catch (e) { /* private mode / blocked -- default stands */ }
+  var lastAlts = [];
 
   // ---- setup form ----
 
@@ -1312,7 +1323,8 @@
     heroWhy.textContent = explanationToText(ex);
     renderReachWarning(payload.reach);
     renderSituationBadge(payload.situation);
-    renderAlts(alts);
+    lastAlts = alts;
+    renderAlts(lastAlts, altsSortMode);
 
     // Persistent, high-contrast signal that this number is a projection
     // against simulated opponent picks, not a confirmed result -- see
@@ -1409,21 +1421,50 @@
     requestAnimationFrame(step);
   }
 
-  function renderAlts(alts) {
-    if (!alts.length) {
+  // CHUNK 74: render the 5 shown alternatives, sorted by `mode`
+  // ("value" = Draft Score order as sent; "risk" = lowest ADP first, i.e.
+  // most likely to be gone before your next turn). Each row carries the
+  // same reach flag as the #1 pick.
+  function renderAlts(alts, mode) {
+    if (!alts || !alts.length) {
       altsList.innerHTML = '<li class="alt-empty">No alternatives computed yet.</li>';
       return;
     }
-    altsList.innerHTML = alts.map(function (a, i) {
+    var rows = alts.slice();
+    if (mode === "risk") {
+      rows.sort(function (a, b) {
+        var aa = a.adp == null ? Infinity : a.adp;
+        var bb = b.adp == null ? Infinity : b.adp;
+        return aa - bb;
+      });
+    }
+    rows = rows.slice(0, 5);
+    altsList.innerHTML = rows.map(function (a) {
+      var adpTxt = a.adp == null ? "—"
+        : (a.is_reach ? "ADP " + a.adp + " · +" + Math.round(a.picks_early) : "ADP " + a.adp);
       return (
-        '<li class="alt-row">' +
-        '<span class="alt-rank">' + (i + 2) + "</span>" +
+        '<li class="alt-row' + (a.is_reach ? " is-reach" : "") + '">' +
         '<span class="pos-pill pos-' + a.position + '">' + a.position + "</span>" +
         '<span class="alt-name">' + escapeHtml(a.name) + "</span>" +
+        '<span class="alt-adp' + (a.is_reach ? " reach" : "") + '">' + adpTxt + "</span>" +
         '<span class="alt-score">' + Math.round(a.score).toLocaleString() + "</span>" +
         "</li>"
       );
     }).join("");
+  }
+
+  if (altsSort) {
+    Array.prototype.forEach.call(altsSort.querySelectorAll(".alts-sort-btn"), function (btn) {
+      if (btn.dataset.sort === altsSortMode) btn.classList.add("active");
+      btn.addEventListener("click", function () {
+        altsSortMode = btn.dataset.sort;
+        try { localStorage.setItem("ff_alts_sort", altsSortMode); } catch (e) { /* ignore */ }
+        Array.prototype.forEach.call(altsSort.querySelectorAll(".alts-sort-btn"), function (b) {
+          b.classList.toggle("active", b.dataset.sort === altsSortMode);
+        });
+        renderAlts(lastAlts, altsSortMode);
+      });
+    });
   }
 
   function updateCounts(cheapAbs, expensiveAbs, cheapDelta, expensiveDelta) {

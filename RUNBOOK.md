@@ -28,6 +28,10 @@ watches and advises.
 ## Reading the screen
 
 - **Big name + score** = the pick. **"Also in the mix"** = next-best.
+  Rows with an **amber left edge + "ADP N · +M"** are reaches too. The
+  **By value / By ADP risk** toggle re-orders those 5 by "most likely
+  gone before your next turn" (lowest ADP first) — same players, your
+  call how much ADP matters this pick.
 - **Amber ⚠️ Reach line:** the pick's real ADP is 15+ picks away — you
   can likely still get them next round. It names someone about to be
   gone; take *that* player now, come back for the reach next turn.

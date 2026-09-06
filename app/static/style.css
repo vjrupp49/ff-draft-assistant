@@ -876,7 +876,40 @@ html, body {
   letter-spacing: 0.1em;
   color: var(--text-lo);
   margin-bottom: 0.65rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
+
+/* CHUNK 74: value / ADP-risk sort toggle for the alternatives list */
+.alts-sort { display: inline-flex; gap: 2px; }
+.alts-sort-btn {
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-lo);
+  background: var(--bg-2);
+  border: 1px solid var(--panel-border);
+  padding: 0.28rem 0.55rem;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.alts-sort-btn:first-child { border-radius: 5px 0 0 5px; }
+.alts-sort-btn:last-child { border-radius: 0 5px 5px 0; }
+.alts-sort-btn.active { color: var(--bg-0); background: var(--go); border-color: var(--go); }
+
+.alt-adp {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-lo);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.alt-adp.reach { color: var(--recalc); }
+.alt-row.is-reach { border-left: 3px solid var(--recalc); }
 
 .alts-list {
   list-style: none;
