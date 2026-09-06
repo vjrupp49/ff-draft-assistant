@@ -850,6 +850,22 @@ html, body {
   max-width: 60ch;
 }
 
+/* CHUNK 73: "rookie / new situation" hint -- same size/shape as
+   .reach-warning but a cool neutral tone (info, not warning) so the two
+   read clearly when both are shown, stacked. */
+.situation-badge {
+  margin-top: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--wr);
+  background: rgba(62, 199, 255, 0.07);
+  border-left: 3px solid var(--wr);
+  border-radius: 6px;
+  max-width: 60ch;
+}
+
 /* ---------------- secondary alternatives list ---------------- */
 
 .alts-block { margin-top: 1.5rem; }

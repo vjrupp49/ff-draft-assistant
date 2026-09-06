@@ -31,6 +31,8 @@ watches and advises.
 - **Amber ⚠️ Reach line:** the pick's real ADP is 15+ picks away — you
   can likely still get them next round. It names someone about to be
   gone; take *that* player now, come back for the reach next turn.
+- **Cyan 🔄 line:** rookie, or just changed teams — the projection is an
+  estimate that may lag reality. Weigh it against your own read.
 - **RB/QB lean:** the engine over-drafts RB/QB vs. WR. If a mid-round
   RB/QB pick feels like a reach even with no warning, look one spot down
   "Also in the mix" for the best WR and strongly consider it.

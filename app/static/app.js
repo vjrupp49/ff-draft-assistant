@@ -1028,6 +1028,7 @@
   var heroScore = document.getElementById("hero-score");
   var heroWhy = document.getElementById("hero-why");
   var reachWarning = document.getElementById("reach-warning");
+  var situationBadge = document.getElementById("situation-badge");
   var provisionalBanner = document.getElementById("provisional-banner");
 
   var altsList = document.getElementById("alts-list");
@@ -1310,6 +1311,7 @@
     animateScore(Math.round(ds.score));
     heroWhy.textContent = explanationToText(ex);
     renderReachWarning(payload.reach);
+    renderSituationBadge(payload.situation);
     renderAlts(alts);
 
     // Persistent, high-contrast signal that this number is a projection
@@ -1353,6 +1355,27 @@
     }
     reachWarning.textContent = txt;
     reachWarning.classList.remove("hidden");
+  }
+
+  // CHUNK 73: inline "rookie / new situation" hint -- server-computed
+  // (draft_score_engine), display-only. Reads projections.py's own
+  // low_confidence / team_changed flags. Sits below the reach line
+  // (independent element, they stack, neither overwrites the other).
+  function renderSituationBadge(sit) {
+    if (!sit || !sit.flag) {
+      situationBadge.classList.add("hidden");
+      situationBadge.textContent = "";
+      return;
+    }
+    var txt;
+    if (sit.rookie_or_thin_track_record) {
+      txt = "🔄 Rookie / thin track record — projection is an estimate, may lag reality.";
+    } else if (sit.team_changed) {
+      txt = "🔄 New team (" + (sit.from_team || "?") + " → " + (sit.to_team || "?")
+        + ") — projection still partly reflects the old situation.";
+    }
+    situationBadge.textContent = txt;
+    situationBadge.classList.remove("hidden");
   }
 
   function animateScore(target) {
@@ -1421,6 +1444,7 @@
     turnBadge.className = "turn-badge waiting";
     heroWhy.textContent = "This draft has finished.";
     renderReachWarning(null);
+    renderSituationBadge(null);
   }
 
   function escapeHtml(str) {

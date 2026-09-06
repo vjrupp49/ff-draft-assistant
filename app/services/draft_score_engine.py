@@ -161,6 +161,29 @@ def compute_draft_score(
                 "vbd_score": round(alt["vbd_score"], 1),
             }
 
+    # CHUNK 73 -- DISPLAY-ONLY "situational change" hint, same pattern as
+    # the CHUNK 69 reach block: reads fields projections.py ALREADY put on
+    # every player (focus_player is the same dict Shapley/portfolio used
+    # above -- no new lookup), no compute, no change to the score.
+    #   - `low_confidence` (+ empty `seasons_used`): projections.py's own
+    #     "no usable prior-season stats -- this is a fallback / ADP-derived
+    #     number, not a real projection" flag. That IS "rookie / thin
+    #     track record" already computed.
+    #   - `team_changed` (bool) + `most_recent_historical_team` -> `team`:
+    #     projections.py / adp.py's Chunk 31 role-change signal (only
+    #     meaningful for players WITH history; a true rookie is
+    #     team_changed=False and caught by the low_confidence half).
+    seasons_used = focus_player.get("seasons_used") or []
+    rookie_or_thin = bool(focus_player.get("low_confidence")) or len(seasons_used) == 0
+    team_changed = bool(focus_player.get("team_changed"))
+    situation = {
+        "flag": rookie_or_thin or team_changed,
+        "rookie_or_thin_track_record": rookie_or_thin,
+        "team_changed": team_changed,
+        "from_team": focus_player.get("most_recent_historical_team") if team_changed else None,
+        "to_team": focus_player.get("team") if team_changed else None,
+    }
+
     return {
         "draft_score": {
             "player_id": focus["player_id"],
@@ -181,6 +204,7 @@ def compute_draft_score(
             "picks_early": picks_early,
             "alternative": reach_alternative,
         },
+        "situation": situation,
         "explanation": {
             "marginal_value": focus_shapley["shapley_value"],
             "marginal_value_stderr": focus_shapley["stderr"],
