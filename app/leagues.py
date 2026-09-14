@@ -119,5 +119,5 @@ LEAGUES: dict[str, LeagueConfig] = {
 # Which league app.config's module-level constants currently derive from.
 # Defaults to Kiddos (the nearer, already-scheduled real draft) so nothing
 # about today's behavior changes unless this is deliberately edited.
-ACTIVE_LEAGUE_KEY = "kiddos"
+ACTIVE_LEAGUE_KEY = "former_bradley_bums"
 ACTIVE_LEAGUE = LEAGUES[ACTIVE_LEAGUE_KEY]
