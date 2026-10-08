@@ -70,4 +70,4 @@ Developed with AI coding assistance (Claude): planning and design decisions in c
 
 ## Credits and data
 
-Data from the Sleeper API and `nfl_data_py` (nflverse). Built by Vincent Rupp. Shared for portfolio and review purposes; please get in touch before reusing it.
+Data from the Sleeper API and `nfl_data_py` (nflverse). Built by Vincent Rupp. Released under the MIT License; see `LICENSE`.
