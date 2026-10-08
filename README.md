@@ -6,6 +6,10 @@ Built for one specific league (10 teams, snake draft, full PPR, SUPERFLEX, TE pr
 
 ## What it does
 
+![The draft screen in mock-draft mode: the recommended pick with its Draft Score, the next-best options, and the live pick feed](docs/images/draft_screen.png)
+
+*Mock-draft mode with simulated opponents: the big card is the recommended pick and its Draft Score, "Also in the mix" lists the runners-up (amber marks a pick that is likely to still be there next round), and the right column is the live pick feed.*
+
 The decision pipeline, end to end:
 
 1. **Projections**: recency-weighted three-season projections from `nfl_data_py`, scored with the league's real settings.
