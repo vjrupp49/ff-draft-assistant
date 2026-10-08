@@ -1,171 +1,73 @@
 # FF Draft Assistant
 
-A personal, single-user fantasy football draft assistant for the **Kiddos**
-league (Sleeper). Phase 1: live Sleeper connectivity + a websocket draft-pick
-feed. Later phases add rankings/projections and the actual draft-day UI.
+A live fantasy-football draft assistant that watches a Sleeper draft in real time and recommends the next pick. Instead of just ranking players by projected points, it simulates the draft forward, adjusts for risk, and returns a single "Draft Score" with a one-line explanation of why.
 
-Free data sources only, forever, unless a cost is explicitly flagged first:
-- [Sleeper API](https://docs.sleeper.com/) — free, public, read-only, no auth
-- [`nfl_data_py`](https://github.com/nflverse/nfl_data_py) — free NFL data
-- Free projection sources (added in a later phase)
+Built for one specific league (10 teams, snake draft, full PPR, SUPERFLEX, TE premium) and used as a second screen: you make the pick in Sleeper, the app watches and advises.
+
+## What it does
+
+The decision pipeline, end to end:
+
+1. **Projections**: recency-weighted three-season projections from `nfl_data_py`, scored with the league's real settings.
+2. **Value over replacement (VBD)**, adjusted for SUPERFLEX, where a naive VBD badly overvalues quarterbacks.
+3. **Correlated Monte Carlo**: log-normal weekly outcomes at the player and roster level.
+4. **MCTS draft search**: Monte Carlo tree search over the picks to come, with an opponent model (ADP proxy x positional need).
+5. **Risk adjustment**: a Markowitz-style penalty, plus lineup awareness (bench depth is discounted, with rank-decaying discounts by position).
+6. **Shapley values** as the explanation layer (marginal contribution of the pick), kept separate so the headline number stays a single score.
+
+On top of that sit a live Sleeper feed over WebSockets (picks pushed as they happen), mock-draft simulation, lineup optimization, waiver and trade evaluation, and draft-day targets.
+
+## Results and validation
+
+A full 15-round, 10-team mock-draft harness runs "my" team with three strategies against identical opponent behavior. In the first validation (3 seeds), the Draft Score averaged a risk-adjusted **3,339** versus **3,174** for VBD-only and **3,138** for ADP-only, and it won in all three seeds. The same harness found and led to a fix for a quarterback over-drafting bug (QB counts dropped from 8/5/7 to 1/2/2).
+
+There are 144 test functions across the repo, including a fixed-trajectory replay harness that freezes a real decision point and compares two code versions on exactly the same data.
+
+## Status and known limitations
+
+This is a working personal tool, not a finished product. The most important open issue, documented in [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md): under this league's scoring the engine still leans toward RB/QB more than a balanced roster would, because FLEX slots are filled without full roster context. Individual rankings are sound; cross-position balance is the weak spot, and the draft-day runbook says what to do about it.
 
 ## Tech stack
 
-- **Backend**: FastAPI + WebSockets (chosen over Streamlit for full control
-  over a custom, gamified, visually distinctive draft-day UI)
-- **Frontend**: plain HTML/CSS/JS served by FastAPI (no framework yet)
-- **Language**: Python only
+Python · FastAPI · WebSockets · NumPy / pandas / SciPy · `nfl_data_py` · Sleeper API (free, public, read-only) · plain HTML/CSS/JS front end
 
-## League settings
+Free data sources only: the [Sleeper API](https://docs.sleeper.com/) and [`nfl_data_py`](https://github.com/nflverse/nfl_data_py).
 
-Hardcoded in [`app/config.py`](app/config.py) — league name "Kiddos", 10
-teams, snake draft, full PPR + TE premium scoring.
-
-**Roster note:** Sleeper's league settings are stale (still show a required
-TE + only 2 FLEX). The league verbally agreed to drop the required TE for a
-3rd FLEX instead. `app/config.py` hardcodes the *corrected* 15-round roster
-(`QB, 2 RB, 2 WR, 3 FLEX, SUPER_FLEX, 6 BN`) as the actual source of truth —
-see the comment there for details. `GET /api/league-check` returns both
-Sleeper's raw (stale) settings and the override side by side so this stays
-easy to sanity-check.
-
-Draft date and draft order are not yet set by the league and are
-intentionally left as `None` in config rather than given placeholder values.
-
-## Project history
-
-Chunk-by-chunk build history and current open items: see
-[`docs/handoff/`](docs/handoff/README.md) — start with `V4_chunks_31-.md`
-(the living doc) for current state, or `V1_chunks_1-10.md` for the working
-model this project uses.
-
-## Setup
+## Run it
 
 ```bash
 python -m venv .venv
-```
-
-Activate it:
-
-```bash
-# Windows (PowerShell)
-.venv\Scripts\Activate.ps1
-
-# macOS/Linux
-source .venv/bin/activate
-```
-
-Install dependencies:
-
-```bash
+.venv\Scripts\Activate.ps1          # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+
+python scripts/refresh_caches.py     # pull projections / ADP into local caches
+python scripts/preflight.py          # must end: RESULT: PASS
+uvicorn app.main:app --reload        # then open http://127.0.0.1:8000
 ```
 
-## Run
-
-```bash
-uvicorn app.main:app --reload
-```
-
-Then visit:
-- http://127.0.0.1:8000/ — placeholder home page
-- http://127.0.0.1:8000/api/league-check — live Sleeper league data +
-  manual roster override, side by side
-- `ws://127.0.0.1:8000/ws/draft` — live draft-pick feed (polls Sleeper every
-  3 seconds, pushes new picks as JSON)
-
-## Testing
-
-```bash
-pytest tests/
-```
-
-The project's first automated test suite (added Chunk 15), covering the
-draft-recommendation engine's most failure-prone corner: `mcts.py`'s
-rollout/tree search. Converts several chunks' worth of manual harness
-runs into permanent regression checks so this failure class can't
-silently reappear:
-
-- `test_positional_balance.py` — multi-seed mock-draft sweep asserting no
-  position drifts more than 1 count from the league-wide median (the
-  same threshold used to catch the original Chunk 9 QB glut). Also
-  checks draft-slot sensitivity. **Limitation, documented in the file
-  itself**: this aggregate check has real but limited sensitivity to the
-  specific historical bug below — treat it as a general sanity check, not
-  the primary guard.
-- `test_chunk12_regression.py` — replays the actual real Sleeper draft
-  that originally surfaced a QB-shortage/TE-glut bug (Chunk 12/13) and
-  asserts the engine now handles it correctly. This is the reliable,
-  deterministic guard against that specific regression.
-- `test_draft_end_boundary.py` — asserts MCTS's lookahead never invents
-  fictional rounds past the real 15-round draft (includes a
-  negative-control test, off by default, proving the guard isn't
-  vacuous — see the file for how to run it).
-- `test_runtime_budget.py` — a generous tripwire (not a performance
-  target) against a catastrophic future slowdown.
-
-**Run this before trusting any change to `mcts.py`, `portfolio.py`,
-`shapley.py`, or `opponent_model.py`** — the project's history (Chunks 9,
-12, 13, 15) shows these are exactly the files prone to this class of bug.
-Full suite runtime is ~3-4 minutes.
-
-## Fixed-trajectory replay harness (Chunk 40)
-
-`replay_lib/` + `scripts/replay_cli.py` / `scripts/replay_compare.py` --
-infrastructure for comparing what two git commits' code would recommend
-for the *exact same* decision (same prior picks, same player data), built
-because fresh full-mock-draft comparisons were confounded by two stacked
-sources of noise (live ADP/projection data drifting between runs, and one
-early decision cascading into a different rest-of-draft -- see
-`docs/handoff/V4_chunks_31-.md`'s Chunk 39/40 entries for the full
-motivation). Three pieces:
-
-1. **A named, immutable data snapshot** (`replay_lib.harness.
-   capture_data_snapshot`) -- freezes `projections.build_baseline_
-   projections()`'s output under a name that's never auto-refreshed or
-   overwritten, unlike its own 24h-TTL cache.
-2. **A frozen trajectory** (`replay_lib.harness.freeze_trajectory`) --
-   every pick before a chosen pick number, from a real Sleeper draft's
-   picks OR a synthetic `mock_draft.run_mock_draft()` run, serialized so
-   replay doesn't re-simulate anything before that point.
-3. **The replay itself** (`replay_lib.harness.replay_decision`) -- loads
-   a frozen trajectory + a pinned snapshot and calls `mcts.recommend()`,
-   annotated with would-start status per candidate.
-
-```bash
-# capture today's data once, under a name you'll reuse for every comparison
-python scripts/replay_cli.py snapshot --name my_snapshot
-
-# freeze a decision point from a real pick log (or `freeze-mock` for a fresh synthetic draft)
-python scripts/replay_cli.py freeze-fixture --fixture tests/fixtures/chunk22_real_draft_picks.json \
-    --pick-no 82 --my-slot 2 --name my_trajectory
-
-# compare two commits' code on that exact decision, holding data + trajectory fixed
-python scripts/replay_compare.py --trajectory data/replay_trajectories/my_trajectory.json \
-    --snapshot data/replay_snapshots/my_snapshot.json --ref-a <old-commit> --ref-b HEAD
-```
-
-`replay_compare.py` runs each ref in its own `git worktree`, so it works
-on any commit without touching your working tree. Snapshots/trajectories
-live under `data/replay_snapshots/` / `data/replay_trajectories/`
-(gitignored, generated -- regenerate with the commands above rather than
-expecting them to be checked in).
+Tests: `pytest`. League settings (league name, roster slots, scoring) are in `app/config.py`; see [`RUNBOOK.md`](RUNBOOK.md) for the draft-day flow.
 
 ## Project structure
 
 ```
-ff-draft-assistant/
-  app/
-    main.py              # FastAPI entrypoint + WebSocket for live draft picks
-    config.py            # league settings (hardcoded, see above)
-    routers/
-    models/
-    services/
-      sleeper.py          # Sleeper API client (read-only)
-    static/
-    templates/
-  data/
-    players_cache.json    # cached Sleeper player dump (gitignored, generated)
-  requirements.txt
-  README.md
+app/
+  main.py          FastAPI entrypoint
+  config.py        league settings
+  routers/         API endpoints (rankings, simulate, mcts, portfolio, shapley,
+                   draft_score, live, lineup, waivers, trade, targets, ...)
+  services/        projections, vbd, simulation, mcts, opponent_model, portfolio,
+                   shapley, sleeper, mock_draft, adp, ...
+  static/, templates/   draft-day UI
+replay_lib/        fixed-trajectory replay harness
+scripts/           cache refresh, preflight, replay tools
+tests/             144 test functions
+docs/handoff/      build log, chunk by chunk
 ```
+
+## How it was built
+
+Developed with AI coding assistance (Claude): planning and design decisions in chat, implementation in Claude Code. [`docs/handoff/`](docs/handoff/README.md) is the running log of that process, including the diagnostic dead ends.
+
+## Credits and data
+
+Data from the Sleeper API and `nfl_data_py` (nflverse). Built by Vincent Rupp. Shared for portfolio and review purposes; please get in touch before reusing it.
